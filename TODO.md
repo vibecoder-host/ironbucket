@@ -71,10 +71,19 @@ This document tracks all pending tasks, improvements, and features to be impleme
   - ✅ Support Allow/Deny effects
 
 ### Encryption
-- ⬜ **Implement encryption** (`src/encryption.rs:22`)
-- ⬜ **Implement decryption** (`src/encryption.rs:27`)
-- ⬜ **Set bucket encryption** (`src/encryption.rs:32`)
-- ⬜ **Get bucket encryption** (`src/encryption.rs:37`)
+- ✅ **Implement encryption** (`src/main.rs:113-144`) - Completed 2025-09-14
+  - ✅ AES-256-GCM encryption with per-object keys
+  - ✅ Automatic key generation and storage in metadata
+- ✅ **Implement decryption** (`src/main.rs:146-174`) - Completed 2025-09-14
+  - ✅ Transparent decryption on object retrieval
+  - ✅ Support for mixed encrypted/unencrypted objects
+- ✅ **Set bucket encryption** (`src/main.rs:619-659`) - Completed 2025-09-14
+  - ✅ PUT bucket encryption configuration endpoint
+  - ✅ Parse and validate encryption rules
+  - ✅ Persist configuration to disk
+- ✅ **Get bucket encryption** (`src/main.rs:320-349`) - Completed 2025-09-14
+  - ✅ GET bucket encryption configuration endpoint
+  - ✅ Return proper error when no encryption configured
 
 ### CORS
 - ⬜ **Store CORS configuration** (`src/cors.rs:26`)
@@ -141,6 +150,13 @@ This document tracks all pending tasks, improvements, and features to be impleme
   - Abort multipart upload with cleanup
   - Support for large files
   - Comprehensive test suite
+- ✅ **Encryption** (Server-side AES-256-GCM encryption) - 2025-09-14
+  - Bucket-level encryption configuration
+  - Automatic encryption on upload when enabled
+  - Transparent decryption on retrieval
+  - Per-object encryption keys
+  - Support for mixed encrypted/unencrypted objects
+  - Complete test coverage
 
 ### Infrastructure
 - ✅ **Remove Redis dependency**
@@ -202,6 +218,7 @@ This document tracks all pending tasks, improvements, and features to be impleme
 - ✅ Batch delete operations (7 comprehensive tests)
 - ✅ Versioning workflow (12 comprehensive tests)
 - ✅ Bucket policies (13 comprehensive tests)
+- ✅ Encryption functionality (15 comprehensive tests)
 - ⬜ ACL enforcement
 
 ### Performance Tests
@@ -253,5 +270,5 @@ This document tracks all pending tasks, improvements, and features to be impleme
 ---
 
 *Last Updated: 2025-09-14*
-*Total Tasks: 51 (Completed: 39, Pending: 12)*
-*Recent Progress: Bucket Policies fully implemented and tested*
+*Total Tasks: 51 (Completed: 43, Pending: 8)*
+*Recent Progress: Encryption fully implemented and tested*

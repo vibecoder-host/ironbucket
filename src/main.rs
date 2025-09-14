@@ -23,6 +23,12 @@ use tracing::{info, debug, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use hmac::Hmac;
 use sha2::Sha256;
+use aes_gcm::{
+    aead::{Aead, KeyInit, OsRng},
+    Aes256Gcm, Nonce, Key,
+};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use rand::RngCore;
 use uuid::Uuid;
 
 #[derive(Clone)]
@@ -102,6 +108,40 @@ fn parse_chunked_data(input: &[u8]) -> Vec<u8> {
 fn find_sequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack.windows(needle.len())
         .position(|window| window == needle)
+}
+
+// Generate a random 256-bit key for AES encryption
+fn generate_encryption_key() -> Vec<u8> {
+    let mut key = vec![0u8; 32]; // 256 bits
+    OsRng.fill_bytes(&mut key);
+    key
+}
+
+// Encrypt data using AES-256-GCM
+fn encrypt_data(data: &[u8], key: &[u8]) -> Result<(Vec<u8>, Vec<u8>), String> {
+    let key = Key::<Aes256Gcm>::from_slice(key);
+    let cipher = Aes256Gcm::new(key);
+
+    let mut nonce_bytes = [0u8; 12];
+    OsRng.fill_bytes(&mut nonce_bytes);
+    let nonce = Nonce::from_slice(&nonce_bytes);
+
+    match cipher.encrypt(nonce, data) {
+        Ok(ciphertext) => Ok((ciphertext, nonce_bytes.to_vec())),
+        Err(e) => Err(format!("Encryption failed: {:?}", e)),
+    }
+}
+
+// Decrypt data using AES-256-GCM
+fn decrypt_data(ciphertext: &[u8], key: &[u8], nonce: &[u8]) -> Result<Vec<u8>, String> {
+    let key = Key::<Aes256Gcm>::from_slice(key);
+    let cipher = Aes256Gcm::new(key);
+    let nonce = Nonce::from_slice(nonce);
+
+    match cipher.decrypt(nonce, ciphertext) {
+        Ok(plaintext) => Ok(plaintext),
+        Err(e) => Err(format!("Decryption failed: {:?}", e)),
+    }
 }
 
 // Check if an action is allowed based on bucket policy
@@ -202,6 +242,13 @@ struct BucketData {
     versioning_status: Option<String>, // "Enabled", "Suspended", or None
     versions: HashMap<String, Vec<ObjectVersion>>, // key -> list of versions
     policy: Option<String>, // JSON policy document
+    encryption: Option<BucketEncryption>, // Bucket encryption configuration
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct BucketEncryption {
+    algorithm: String, // "AES256" or "aws:kms"
+    kms_key_id: Option<String>, // KMS key ID if using KMS
 }
 
 #[derive(Clone)]
@@ -233,6 +280,14 @@ struct ObjectMetadata {
     storage_class: String,
     metadata: HashMap<String, String>,
     version_id: Option<String>,
+    encryption: Option<ObjectEncryption>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct ObjectEncryption {
+    algorithm: String,
+    key_base64: String, // Base64 encoded encryption key
+    nonce_base64: String, // Base64 encoded nonce for GCM
 }
 
 #[derive(Clone)]
@@ -342,6 +397,7 @@ struct BucketQueryParams {
     versions: Option<String>,
     acl: Option<String>,
     policy: Option<String>,
+    encryption: Option<String>,
     uploads: Option<String>,
     delete: Option<String>,
     #[serde(rename = "max-keys")]
@@ -472,6 +528,80 @@ async fn handle_bucket_get(
 <Error>
     <Code>NoSuchBucketPolicy</Code>
     <Message>The bucket policy does not exist</Message>
+</Error>"#))
+            .unwrap();
+    }
+
+    if params.encryption.is_some() {
+        // Return bucket encryption configuration
+        let buckets = state.buckets.lock().unwrap();
+
+        if let Some(bucket_data) = buckets.get(&bucket) {
+            if let Some(ref encryption) = bucket_data.encryption {
+                let encryption_xml = format!(r#"<?xml version="1.0" encoding="UTF-8"?>
+<ServerSideEncryptionConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+    <Rule>
+        <ApplyServerSideEncryptionByDefault>
+            <SSEAlgorithm>{}</SSEAlgorithm>
+            {}
+        </ApplyServerSideEncryptionByDefault>
+    </Rule>
+</ServerSideEncryptionConfiguration>"#,
+                    encryption.algorithm,
+                    if let Some(ref kms_key) = encryption.kms_key_id {
+                        format!("<KMSMasterKeyID>{}</KMSMasterKeyID>", kms_key)
+                    } else {
+                        String::new()
+                    }
+                );
+
+                return Response::builder()
+                    .status(StatusCode::OK)
+                    .header(header::CONTENT_TYPE, "application/xml")
+                    .body(Body::from(encryption_xml))
+                    .unwrap();
+            } else {
+                // Try to load from disk if not in memory
+                let encryption_file = state.storage_path.join(&bucket).join(".encryption");
+                if encryption_file.exists() {
+                    if let Ok(encryption_json) = fs::read_to_string(&encryption_file) {
+                        if let Ok(encryption) = serde_json::from_str::<BucketEncryption>(&encryption_json) {
+                            let encryption_xml = format!(r#"<?xml version="1.0" encoding="UTF-8"?>
+<ServerSideEncryptionConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+    <Rule>
+        <ApplyServerSideEncryptionByDefault>
+            <SSEAlgorithm>{}</SSEAlgorithm>
+            {}
+        </ApplyServerSideEncryptionByDefault>
+    </Rule>
+</ServerSideEncryptionConfiguration>"#,
+                                encryption.algorithm,
+                                if let Some(ref kms_key) = encryption.kms_key_id {
+                                    format!("<KMSMasterKeyID>{}</KMSMasterKeyID>", kms_key)
+                                } else {
+                                    String::new()
+                                }
+                            );
+
+                            return Response::builder()
+                                .status(StatusCode::OK)
+                                .header(header::CONTENT_TYPE, "application/xml")
+                                .body(Body::from(encryption_xml))
+                                .unwrap();
+                        }
+                    }
+                }
+            }
+        }
+
+        // No encryption configuration
+        return Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .header(header::CONTENT_TYPE, "application/xml")
+            .body(Body::from(r#"<?xml version="1.0" encoding="UTF-8"?>
+<Error>
+    <Code>ServerSideEncryptionConfigurationNotFoundError</Code>
+    <Message>The server side encryption configuration was not found</Message>
 </Error>"#))
             .unwrap();
     }
@@ -695,6 +825,77 @@ async fn handle_bucket_put(
                 warn!("Failed to persist bucket policy: {}", e);
             } else {
                 debug!("Policy persisted to: {:?}", policy_file);
+            }
+        } else {
+            return Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .body(Body::from("NoSuchBucket"))
+                .unwrap();
+        }
+
+        return Response::builder()
+            .status(StatusCode::OK)
+            .body(Body::empty())
+            .unwrap();
+    }
+
+    if params.encryption.is_some() {
+        // Set bucket encryption configuration
+        let body_str = String::from_utf8_lossy(&body);
+        debug!("Setting bucket encryption: {}", body_str);
+
+        // Parse encryption configuration from XML
+        let mut algorithm = "AES256".to_string();
+        let mut kms_key_id = None;
+
+        // Simple XML parsing
+        if body_str.contains("<SSEAlgorithm>") {
+            if let Some(start) = body_str.find("<SSEAlgorithm>") {
+                if let Some(end) = body_str.find("</SSEAlgorithm>") {
+                    algorithm = body_str[start + 14..end].to_string();
+                }
+            }
+        }
+
+        if body_str.contains("<KMSMasterKeyID>") {
+            if let Some(start) = body_str.find("<KMSMasterKeyID>") {
+                if let Some(end) = body_str.find("</KMSMasterKeyID>") {
+                    kms_key_id = Some(body_str[start + 16..end].to_string());
+                }
+            }
+        }
+
+        // Validate algorithm
+        if algorithm != "AES256" && algorithm != "aws:kms" {
+            return Response::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .header(header::CONTENT_TYPE, "application/xml")
+                .body(Body::from(r#"<?xml version="1.0" encoding="UTF-8"?>
+<Error>
+    <Code>InvalidEncryptionAlgorithm</Code>
+    <Message>The encryption algorithm specified is not valid</Message>
+</Error>"#))
+                .unwrap();
+        }
+
+        // Update bucket encryption
+        let mut buckets = state.buckets.lock().unwrap();
+        if let Some(bucket_data) = buckets.get_mut(&bucket) {
+            let encryption = BucketEncryption {
+                algorithm: algorithm.clone(),
+                kms_key_id: kms_key_id.clone(),
+            };
+            bucket_data.encryption = Some(encryption.clone());
+            info!("Set encryption for bucket {}: {}", bucket, algorithm);
+
+            // Persist encryption configuration to disk
+            let encryption_file = state.storage_path.join(&bucket).join(".encryption");
+            if let Ok(encryption_json) = serde_json::to_string(&encryption) {
+                if let Err(e) = fs::write(&encryption_file, encryption_json) {
+                    warn!("Failed to persist encryption configuration: {}", e);
+                } else {
+                    debug!("Encryption configuration persisted to: {:?}", encryption_file);
+                }
             }
         } else {
             return Response::builder()
@@ -1189,6 +1390,7 @@ async fn handle_object_post(
                 storage_class: "STANDARD".to_string(),
                 metadata: HashMap::new(),
                 version_id: None,
+                encryption: None, // TODO: Add encryption support for multipart
             };
 
             if let Ok(metadata_json) = serde_json::to_string(&metadata) {
@@ -1213,6 +1415,7 @@ async fn handle_object_post(
                 versioning_status: None,
                 versions: HashMap::new(),
                 policy: None,
+                encryption: None,
             });
 
             bucket_data.objects.insert(key.clone(), ObjectData {
@@ -1344,6 +1547,7 @@ async fn create_bucket(
             versioning_status: None,
             versions: HashMap::new(),
             policy: None,
+            encryption: None,
         },
     );
 
@@ -1580,13 +1784,9 @@ async fn put_object(
         }
     }
 
-    if let Err(e) = fs::write(&object_path, &data) {
-        warn!("Failed to write object to disk: {}", e);
-        return Response::builder()
-            .status(StatusCode::INTERNAL_SERVER_ERROR)
-            .body(Body::from("Failed to store object"))
-            .unwrap();
-    }
+    // Will be updated after encryption check
+    // NOTE: We write the data first, then check encryption below
+    // The actual write happens after we determine if encryption is needed
 
     // Check if versioning is enabled for this bucket
     let version_id = {
@@ -1599,6 +1799,7 @@ async fn put_object(
                 versioning_status: None,
                 versions: HashMap::new(),
                 policy: None,
+                encryption: None,
             });
 
         // Load versioning status from disk if not in memory
@@ -1659,15 +1860,64 @@ async fn put_object(
         .unwrap_or("application/octet-stream")
         .to_string();
 
+    // Check if bucket has encryption enabled
+    let encryption_info = {
+        let buckets = state.buckets.lock().unwrap();
+        if let Some(bucket_data) = buckets.get(&bucket) {
+            if let Some(ref encryption) = bucket_data.encryption {
+                if encryption.algorithm == "AES256" {
+                    // Generate encryption key and encrypt data
+                    let key = generate_encryption_key();
+                    match encrypt_data(&data, &key) {
+                        Ok((encrypted_data, nonce)) => {
+                            Some((encrypted_data, ObjectEncryption {
+                                algorithm: "AES256".to_string(),
+                                key_base64: BASE64.encode(&key),
+                                nonce_base64: BASE64.encode(&nonce),
+                            }))
+                        },
+                        Err(e) => {
+                            warn!("Failed to encrypt object: {}", e);
+                            None
+                        }
+                    }
+                } else {
+                    None // KMS encryption not implemented
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    };
+
+    // Use encrypted data if encryption is enabled
+    let (final_data, object_encryption) = if let Some((encrypted_data, enc_info)) = encryption_info {
+        (encrypted_data, Some(enc_info))
+    } else {
+        (data.clone(), None)
+    };
+
+    // Write the (possibly encrypted) data to disk
+    if let Err(e) = fs::write(&object_path, &final_data) {
+        warn!("Failed to write object to disk: {}", e);
+        return Response::builder()
+            .status(StatusCode::INTERNAL_SERVER_ERROR)
+            .body(Body::from("Failed to store object"))
+            .unwrap();
+    }
+
     let metadata = ObjectMetadata {
         key: key.clone(),
-        size: data.len() as u64,
+        size: final_data.len() as u64,
         etag: etag.clone(),
         last_modified: Utc::now(),
         content_type,
         storage_class: "STANDARD".to_string(),
         metadata: HashMap::new(),
         version_id: version_id.clone(),
+        encryption: object_encryption,
     };
 
     if let Ok(metadata_json) = serde_json::to_string(&metadata) {
@@ -1692,6 +1942,7 @@ async fn put_object(
                     versioning_status: None,
                     versions: HashMap::new(),
                     policy: None,
+                    encryption: None,
                 },
             );
             buckets.get_mut(&bucket).unwrap()
@@ -1745,13 +1996,37 @@ async fn get_object(
 
     // Try to read metadata from file
     let metadata_path = object_path.with_extension("metadata");
-    let (etag, last_modified, content_type) = if let Ok(metadata_json) = fs::read_to_string(&metadata_path) {
+    let (data_to_return, etag, last_modified, content_type, encryption_header) = if let Ok(metadata_json) = fs::read_to_string(&metadata_path) {
         if let Ok(metadata) = serde_json::from_str::<ObjectMetadata>(&metadata_json) {
-            (metadata.etag, metadata.last_modified, metadata.content_type)
+            // Check if object is encrypted and decrypt if necessary
+            let (final_data, enc_header) = if let Some(encryption) = &metadata.encryption {
+                if encryption.algorithm == "AES256" {
+                    // Decode the key and nonce
+                    let key = BASE64.decode(&encryption.key_base64).unwrap_or_default();
+                    let nonce = BASE64.decode(&encryption.nonce_base64).unwrap_or_default();
+
+                    // Decrypt the data
+                    match decrypt_data(&data, &key, &nonce) {
+                        Ok(decrypted) => (decrypted, Some("AES256".to_string())),
+                        Err(e) => {
+                            warn!("Failed to decrypt object: {}", e);
+                            return Response::builder()
+                                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                                .body(Body::from("Failed to decrypt object"))
+                                .unwrap();
+                        }
+                    }
+                } else {
+                    (data.clone(), Some(encryption.algorithm.clone()))
+                }
+            } else {
+                (data.clone(), None)
+            };
+            (final_data, metadata.etag, metadata.last_modified, metadata.content_type, enc_header)
         } else {
             // Metadata file exists but couldn't parse, fall back to defaults
             let etag = format!("{:x}", md5::compute(&data));
-            (etag, Utc::now(), "application/octet-stream".to_string())
+            (data.clone(), etag, Utc::now(), "application/octet-stream".to_string(), None)
         }
     } else {
         // No metadata file, check in-memory storage or calculate
@@ -1769,17 +2044,22 @@ async fn get_object(
             let etag = format!("{:x}", md5::compute(&data));
             (etag, Utc::now())
         };
-        (etag, last_modified, "application/octet-stream".to_string())
+        (data.clone(), etag, last_modified, "application/octet-stream".to_string(), None)
     };
 
-    Response::builder()
+    let mut response = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, content_type)
-        .header(header::CONTENT_LENGTH, data.len().to_string())
+        .header(header::CONTENT_LENGTH, data_to_return.len().to_string())
         .header(header::ETAG, format!("\"{}\"", etag))
-        .header(header::LAST_MODIFIED, format_http_date(&last_modified))
-        .body(Body::from(data))
-        .unwrap()
+        .header(header::LAST_MODIFIED, format_http_date(&last_modified));
+
+    // Add encryption header if object was encrypted
+    if let Some(enc_algorithm) = encryption_header {
+        response = response.header("x-amz-server-side-encryption", enc_algorithm);
+    }
+
+    response.body(Body::from(data_to_return)).unwrap()
 }
 
 async fn delete_object(

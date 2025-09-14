@@ -61,6 +61,7 @@ run_test_suite "Multipart Upload" "./test-multipart-upload.sh"
 run_test_suite "Batch Delete Operations" "./test-batch-delete.sh"
 run_test_suite "Object Versioning" "./test-versioning.sh"
 run_test_suite "Bucket Policies" "./test-bucket-policies.sh"
+run_test_suite "Encryption" "./test-encryption.sh"
 
 # Performance tests are optional (they take longer)
 if [ "${RUN_PERFORMANCE_TESTS:-false}" = "true" ]; then
