@@ -386,46 +386,181 @@ async fn handle_bucket_post(
         let body_str = String::from_utf8_lossy(&body);
         debug!("Batch delete request body: {}", body_str);
 
-        // Simple XML parsing for delete request
-        let mut deleted_count = 0;
-        let mut _errors: Vec<String> = Vec::new();
+        // Structure to hold delete results
+        #[derive(Debug)]
+        struct DeleteObject {
+            key: String,
+            version_id: Option<String>,
+        }
 
-        // Extract object keys from XML (simplified parsing)
-        let lines: Vec<&str> = body_str.lines().collect();
-        for line in lines {
-            if line.contains("<Key>") && line.contains("</Key>") {
-                if let Some(start) = line.find("<Key>") {
-                    if let Some(end) = line.find("</Key>") {
-                        let key = &line[start + 5..end];
+        #[derive(Debug)]
+        struct DeleteResult {
+            deleted: Vec<DeletedObject>,
+            errors: Vec<DeleteError>,
+        }
 
-                        // Delete the object
-                        let mut buckets = state.buckets.lock().unwrap();
-                        if let Some(bucket_data) = buckets.get_mut(&bucket) {
-                            if bucket_data.objects.remove(key).is_some() {
-                                // Also delete from disk
-                                let object_path = state.storage_path.join(&bucket).join(key);
-                                let _ = fs::remove_file(&object_path);
-                                deleted_count += 1;
-                            }
+        #[derive(Debug)]
+        struct DeletedObject {
+            key: String,
+            version_id: Option<String>,
+            delete_marker: bool,
+            delete_marker_version_id: Option<String>,
+        }
+
+        #[derive(Debug)]
+        struct DeleteError {
+            key: String,
+            code: String,
+            message: String,
+            version_id: Option<String>,
+        }
+
+        let mut result = DeleteResult {
+            deleted: Vec::new(),
+            errors: Vec::new(),
+        };
+
+        // Parse XML to extract objects to delete
+        let mut objects_to_delete = Vec::new();
+        let mut current_key = None;
+        let mut current_version_id = None;
+        let mut in_object = false;
+
+        for line in body_str.lines() {
+            let line = line.trim();
+
+            if line.contains("<Object>") {
+                in_object = true;
+                current_key = None;
+                current_version_id = None;
+            } else if line.contains("</Object>") {
+                if let Some(key) = current_key.take() {
+                    objects_to_delete.push(DeleteObject {
+                        key,
+                        version_id: current_version_id.take(),
+                    });
+                }
+                in_object = false;
+            } else if in_object {
+                if line.contains("<Key>") && line.contains("</Key>") {
+                    if let Some(start) = line.find("<Key>") {
+                        if let Some(end) = line.find("</Key>") {
+                            current_key = Some(line[start + 5..end].to_string());
+                        }
+                    }
+                } else if line.contains("<VersionId>") && line.contains("</VersionId>") {
+                    if let Some(start) = line.find("<VersionId>") {
+                        if let Some(end) = line.find("</VersionId>") {
+                            current_version_id = Some(line[start + 11..end].to_string());
                         }
                     }
                 }
             }
         }
 
-        // Return delete result
+        // Process deletions
+        for obj in objects_to_delete {
+            let object_path = state.storage_path.join(&bucket).join(&obj.key);
+            let metadata_path = object_path.with_extension("metadata");
+
+            // Check if object exists
+            if !object_path.exists() {
+                result.errors.push(DeleteError {
+                    key: obj.key.clone(),
+                    code: "NoSuchKey".to_string(),
+                    message: "The specified key does not exist.".to_string(),
+                    version_id: obj.version_id,
+                });
+                continue;
+            }
+
+            // Delete from disk
+            let mut delete_success = true;
+            if let Err(e) = fs::remove_file(&object_path) {
+                warn!("Failed to delete object file {}: {}", obj.key, e);
+                delete_success = false;
+            }
+
+            // Delete metadata file if it exists
+            if metadata_path.exists() {
+                if let Err(e) = fs::remove_file(&metadata_path) {
+                    warn!("Failed to delete metadata file for {}: {}", obj.key, e);
+                }
+            }
+
+            // Delete from memory
+            let mut buckets = state.buckets.lock().unwrap();
+            if let Some(bucket_data) = buckets.get_mut(&bucket) {
+                bucket_data.objects.remove(&obj.key);
+            }
+
+            if delete_success {
+                result.deleted.push(DeletedObject {
+                    key: obj.key,
+                    version_id: obj.version_id,
+                    delete_marker: false,
+                    delete_marker_version_id: None,
+                });
+                info!("Batch delete: deleted object {}/{}", bucket, result.deleted.last().unwrap().key);
+            } else {
+                result.errors.push(DeleteError {
+                    key: obj.key,
+                    code: "InternalError".to_string(),
+                    message: "We encountered an internal error. Please try again.".to_string(),
+                    version_id: obj.version_id,
+                });
+            }
+        }
+
+        // Build response XML
         let mut xml = format!(r#"<?xml version="1.0" encoding="UTF-8"?>
 <DeleteResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">"#);
 
-        // Add deleted objects (simplified - just return success for all)
-        for _ in 0..deleted_count {
-            xml.push_str(r#"
+        // Add successfully deleted objects
+        for deleted in &result.deleted {
+            xml.push_str(&format!(r#"
     <Deleted>
-        <Key>object</Key>
+        <Key>{}</Key>"#, deleted.key));
+
+            if let Some(ref version_id) = deleted.version_id {
+                xml.push_str(&format!(r#"
+        <VersionId>{}</VersionId>"#, version_id));
+            }
+
+            if deleted.delete_marker {
+                xml.push_str(r#"
+        <DeleteMarker>true</DeleteMarker>"#);
+            }
+
+            if let Some(ref marker_version_id) = deleted.delete_marker_version_id {
+                xml.push_str(&format!(r#"
+        <DeleteMarkerVersionId>{}</DeleteMarkerVersionId>"#, marker_version_id));
+            }
+
+            xml.push_str(r#"
     </Deleted>"#);
         }
 
+        // Add errors
+        for error in &result.errors {
+            xml.push_str(&format!(r#"
+    <Error>
+        <Key>{}</Key>
+        <Code>{}</Code>
+        <Message>{}</Message>"#, error.key, error.code, error.message));
+
+            if let Some(ref version_id) = error.version_id {
+                xml.push_str(&format!(r#"
+        <VersionId>{}</VersionId>"#, version_id));
+            }
+
+            xml.push_str(r#"
+    </Error>"#);
+        }
+
         xml.push_str("\n</DeleteResult>");
+
+        info!("Batch delete completed: {} deleted, {} errors", result.deleted.len(), result.errors.len());
 
         return Response::builder()
             .status(StatusCode::OK)
