@@ -1,10 +1,7 @@
-version: '3.8'
-
 services:
   ironbucket:
     build: .
     image: ironbucket:latest
-    #container_name: ironbucket
     ports:
       - "172.17.0.1:20000:9000"
     volumes:
@@ -14,9 +11,3 @@ services:
       - RUST_LOG=ironbucket=info,tower_http=info
       - STORAGE_PATH=/s3
     restart: always
-    networks:
-      - ironbucket-network
-
-networks:
-  ironbucket-network:
-    driver: bridge
