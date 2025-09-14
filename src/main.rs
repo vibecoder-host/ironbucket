@@ -243,12 +243,35 @@ struct BucketData {
     versions: HashMap<String, Vec<ObjectVersion>>, // key -> list of versions
     policy: Option<String>, // JSON policy document
     encryption: Option<BucketEncryption>, // Bucket encryption configuration
+    cors: Option<CorsConfiguration>, // CORS configuration
 }
 
 #[derive(Clone, Serialize, Deserialize)]
 struct BucketEncryption {
     algorithm: String, // "AES256" or "aws:kms"
     kms_key_id: Option<String>, // KMS key ID if using KMS
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+struct CorsConfiguration {
+    #[serde(rename = "CORSRules")]
+    cors_rules: Vec<CorsRule>,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+struct CorsRule {
+    #[serde(rename = "AllowedHeaders", skip_serializing_if = "Option::is_none")]
+    allowed_headers: Option<Vec<String>>,
+    #[serde(rename = "AllowedMethods")]
+    allowed_methods: Vec<String>,
+    #[serde(rename = "AllowedOrigins")]
+    allowed_origins: Vec<String>,
+    #[serde(rename = "ExposeHeaders", skip_serializing_if = "Option::is_none")]
+    expose_headers: Option<Vec<String>>,
+    #[serde(rename = "MaxAgeSeconds", skip_serializing_if = "Option::is_none")]
+    max_age_seconds: Option<u32>,
+    #[serde(rename = "ID", skip_serializing_if = "Option::is_none")]
+    id: Option<String>,
 }
 
 #[derive(Clone)]
@@ -398,6 +421,7 @@ struct BucketQueryParams {
     acl: Option<String>,
     policy: Option<String>,
     encryption: Option<String>,
+    cors: Option<String>,
     uploads: Option<String>,
     delete: Option<String>,
     #[serde(rename = "max-keys")]
@@ -602,6 +626,126 @@ async fn handle_bucket_get(
 <Error>
     <Code>ServerSideEncryptionConfigurationNotFoundError</Code>
     <Message>The server side encryption configuration was not found</Message>
+</Error>"#))
+            .unwrap();
+    }
+
+    if params.cors.is_some() {
+        // Return bucket CORS configuration in JSON format for AWS CLI
+        let buckets = state.buckets.lock().unwrap();
+
+        if let Some(bucket_data) = buckets.get(&bucket) {
+            if let Some(ref cors) = bucket_data.cors {
+                // Return CORS configuration as XML (AWS CLI will convert to JSON)
+                let mut cors_xml = String::from(r#"<?xml version="1.0" encoding="UTF-8"?>
+<CORSConfiguration>"#);
+
+                for rule in &cors.cors_rules {
+                    cors_xml.push_str("\n  <CORSRule>");
+
+                    if let Some(ref id) = rule.id {
+                        cors_xml.push_str(&format!("\n    <ID>{}</ID>", id));
+                    }
+
+                    for origin in &rule.allowed_origins {
+                        cors_xml.push_str(&format!("\n    <AllowedOrigin>{}</AllowedOrigin>", origin));
+                    }
+
+                    for method in &rule.allowed_methods {
+                        cors_xml.push_str(&format!("\n    <AllowedMethod>{}</AllowedMethod>", method));
+                    }
+
+                    if let Some(ref headers) = rule.allowed_headers {
+                        for header in headers {
+                            cors_xml.push_str(&format!("\n    <AllowedHeader>{}</AllowedHeader>", header));
+                        }
+                    }
+
+                    if let Some(ref headers) = rule.expose_headers {
+                        for header in headers {
+                            cors_xml.push_str(&format!("\n    <ExposeHeader>{}</ExposeHeader>", header));
+                        }
+                    }
+
+                    if let Some(max_age) = rule.max_age_seconds {
+                        cors_xml.push_str(&format!("\n    <MaxAgeSeconds>{}</MaxAgeSeconds>", max_age));
+                    }
+
+                    cors_xml.push_str("\n  </CORSRule>");
+                }
+
+                cors_xml.push_str("\n</CORSConfiguration>");
+
+                return Response::builder()
+                    .status(StatusCode::OK)
+                    .header(header::CONTENT_TYPE, "application/xml")
+                    .body(Body::from(cors_xml))
+                    .unwrap();
+            } else {
+                // Try to load from disk if not in memory
+                let cors_file = state.storage_path.join(&bucket).join(".cors");
+                if cors_file.exists() {
+                    if let Ok(cors_json) = fs::read_to_string(&cors_file) {
+                        if let Ok(cors) = serde_json::from_str::<CorsConfiguration>(&cors_json) {
+                            // Generate XML from loaded CORS config
+                            let mut cors_xml = String::from(r#"<?xml version="1.0" encoding="UTF-8"?>
+<CORSConfiguration>"#);
+
+                            for rule in &cors.cors_rules {
+                                cors_xml.push_str("\n  <CORSRule>");
+
+                                if let Some(ref id) = rule.id {
+                                    cors_xml.push_str(&format!("\n    <ID>{}</ID>", id));
+                                }
+
+                                for origin in &rule.allowed_origins {
+                                    cors_xml.push_str(&format!("\n    <AllowedOrigin>{}</AllowedOrigin>", origin));
+                                }
+
+                                for method in &rule.allowed_methods {
+                                    cors_xml.push_str(&format!("\n    <AllowedMethod>{}</AllowedMethod>", method));
+                                }
+
+                                if let Some(ref headers) = rule.allowed_headers {
+                                    for header in headers {
+                                        cors_xml.push_str(&format!("\n    <AllowedHeader>{}</AllowedHeader>", header));
+                                    }
+                                }
+
+                                if let Some(ref headers) = rule.expose_headers {
+                                    for header in headers {
+                                        cors_xml.push_str(&format!("\n    <ExposeHeader>{}</ExposeHeader>", header));
+                                    }
+                                }
+
+                                if let Some(max_age) = rule.max_age_seconds {
+                                    cors_xml.push_str(&format!("\n    <MaxAgeSeconds>{}</MaxAgeSeconds>", max_age));
+                                }
+
+                                cors_xml.push_str("\n  </CORSRule>");
+                            }
+
+                            cors_xml.push_str("\n</CORSConfiguration>");
+
+                            return Response::builder()
+                                .status(StatusCode::OK)
+                                .header(header::CONTENT_TYPE, "application/xml")
+                                .body(Body::from(cors_xml))
+                                .unwrap();
+                        }
+                    }
+                }
+            }
+        }
+
+        // No CORS configuration
+        return Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .header(header::CONTENT_TYPE, "application/xml")
+            .body(Body::from(r#"<?xml version="1.0" encoding="UTF-8"?>
+<Error>
+    <Code>NoSuchCORSConfiguration</Code>
+    <Message>The CORS configuration does not exist</Message>
 </Error>"#))
             .unwrap();
     }
@@ -895,6 +1039,145 @@ async fn handle_bucket_put(
                     warn!("Failed to persist encryption configuration: {}", e);
                 } else {
                     debug!("Encryption configuration persisted to: {:?}", encryption_file);
+                }
+            }
+        } else {
+            return Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .body(Body::from("NoSuchBucket"))
+                .unwrap();
+        }
+
+        return Response::builder()
+            .status(StatusCode::OK)
+            .body(Body::empty())
+            .unwrap();
+    }
+
+    if params.cors.is_some() {
+        // Parse CORS configuration from body (XML format from AWS CLI)
+        let body_str = String::from_utf8_lossy(&body);
+        debug!("CORS configuration body: {}", body_str);
+
+        // Parse XML to extract CORS rules
+        let mut cors_rules = Vec::new();
+
+        // Split by CORSRule tags to parse each rule
+        let rule_parts: Vec<&str> = body_str.split("<CORSRule>").collect();
+        for (i, rule_part) in rule_parts.iter().enumerate() {
+            if i == 0 { continue; } // Skip the part before first CORSRule
+
+            let mut allowed_origins = Vec::new();
+            let mut allowed_methods = Vec::new();
+            let mut allowed_headers = None;
+            let mut expose_headers = None;
+            let mut max_age_seconds = None;
+            let mut id = None;
+
+            // Extract ID
+            if let Some(id_start) = rule_part.find("<ID>") {
+                if let Some(id_end) = rule_part.find("</ID>") {
+                    id = Some(rule_part[id_start + 4..id_end].to_string());
+                }
+            }
+
+            // Extract AllowedOrigins
+            let origin_parts: Vec<&str> = rule_part.split("<AllowedOrigin>").collect();
+            for (j, origin_part) in origin_parts.iter().enumerate() {
+                if j == 0 { continue; }
+                if let Some(end) = origin_part.find("</AllowedOrigin>") {
+                    allowed_origins.push(origin_part[..end].to_string());
+                }
+            }
+
+            // Extract AllowedMethods
+            let method_parts: Vec<&str> = rule_part.split("<AllowedMethod>").collect();
+            for (j, method_part) in method_parts.iter().enumerate() {
+                if j == 0 { continue; }
+                if let Some(end) = method_part.find("</AllowedMethod>") {
+                    allowed_methods.push(method_part[..end].to_string());
+                }
+            }
+
+            // Extract AllowedHeaders
+            let header_parts: Vec<&str> = rule_part.split("<AllowedHeader>").collect();
+            if header_parts.len() > 1 {
+                let mut headers = Vec::new();
+                for (j, header_part) in header_parts.iter().enumerate() {
+                    if j == 0 { continue; }
+                    if let Some(end) = header_part.find("</AllowedHeader>") {
+                        headers.push(header_part[..end].to_string());
+                    }
+                }
+                if !headers.is_empty() {
+                    allowed_headers = Some(headers);
+                }
+            }
+
+            // Extract ExposeHeaders
+            let expose_parts: Vec<&str> = rule_part.split("<ExposeHeader>").collect();
+            if expose_parts.len() > 1 {
+                let mut headers = Vec::new();
+                for (j, expose_part) in expose_parts.iter().enumerate() {
+                    if j == 0 { continue; }
+                    if let Some(end) = expose_part.find("</ExposeHeader>") {
+                        headers.push(expose_part[..end].to_string());
+                    }
+                }
+                if !headers.is_empty() {
+                    expose_headers = Some(headers);
+                }
+            }
+
+            // Extract MaxAgeSeconds
+            if let Some(age_start) = rule_part.find("<MaxAgeSeconds>") {
+                if let Some(age_end) = rule_part.find("</MaxAgeSeconds>") {
+                    if let Ok(age) = rule_part[age_start + 15..age_end].parse::<u32>() {
+                        max_age_seconds = Some(age);
+                    }
+                }
+            }
+
+            if !allowed_origins.is_empty() && !allowed_methods.is_empty() {
+                cors_rules.push(CorsRule {
+                    id,
+                    allowed_origins,
+                    allowed_methods,
+                    allowed_headers,
+                    expose_headers,
+                    max_age_seconds,
+                });
+            }
+        }
+
+        if cors_rules.is_empty() {
+            return Response::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .header(header::CONTENT_TYPE, "application/xml")
+                .body(Body::from(r#"<?xml version="1.0" encoding="UTF-8"?>
+<Error>
+    <Code>MalformedXML</Code>
+    <Message>The CORS configuration is not well-formed</Message>
+</Error>"#))
+                .unwrap();
+        }
+
+        // Store CORS configuration
+        let mut buckets = state.buckets.lock().unwrap();
+        if let Some(bucket_data) = buckets.get_mut(&bucket) {
+            let cors_config = CorsConfiguration {
+                cors_rules,
+            };
+            bucket_data.cors = Some(cors_config.clone());
+            info!("Set CORS configuration for bucket {}", bucket);
+
+            // Persist CORS configuration to disk
+            let cors_file = state.storage_path.join(&bucket).join(".cors");
+            if let Ok(cors_json) = serde_json::to_string(&cors_config) {
+                if let Err(e) = fs::write(&cors_file, cors_json) {
+                    warn!("Failed to persist CORS configuration: {}", e);
+                } else {
+                    debug!("CORS configuration persisted to: {:?}", cors_file);
                 }
             }
         } else {
@@ -1416,6 +1699,7 @@ async fn handle_object_post(
                 versions: HashMap::new(),
                 policy: None,
                 encryption: None,
+                cors: None,
             });
 
             bucket_data.objects.insert(key.clone(), ObjectData {
@@ -1548,6 +1832,7 @@ async fn create_bucket(
             versions: HashMap::new(),
             policy: None,
             encryption: None,
+            cors: None,
         },
     );
 
@@ -1598,6 +1883,90 @@ async fn delete_bucket(
 <Error>
     <Code>NoSuchBucketPolicy</Code>
     <Message>The bucket policy does not exist</Message>
+</Error>"#))
+                    .unwrap();
+            }
+        } else {
+            return Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .body(Body::from("NoSuchBucket"))
+                .unwrap();
+        }
+    }
+
+    // Handle encryption deletion
+    if params.encryption.is_some() {
+        let mut buckets = state.buckets.lock().unwrap();
+        if let Some(bucket_data) = buckets.get_mut(&bucket) {
+            if bucket_data.encryption.is_some() {
+                bucket_data.encryption = None;
+                info!("Deleted encryption configuration for bucket {}", bucket);
+
+                // Remove encryption file from disk
+                let encryption_file = state.storage_path.join(&bucket).join(".encryption");
+                if encryption_file.exists() {
+                    if let Err(e) = fs::remove_file(&encryption_file) {
+                        warn!("Failed to delete encryption file: {}", e);
+                    } else {
+                        debug!("Encryption file deleted: {:?}", encryption_file);
+                    }
+                }
+
+                return Response::builder()
+                    .status(StatusCode::NO_CONTENT)
+                    .body(Body::empty())
+                    .unwrap();
+            } else {
+                // No encryption to delete
+                return Response::builder()
+                    .status(StatusCode::NOT_FOUND)
+                    .header(header::CONTENT_TYPE, "application/xml")
+                    .body(Body::from(r#"<?xml version="1.0" encoding="UTF-8"?>
+<Error>
+    <Code>ServerSideEncryptionConfigurationNotFoundError</Code>
+    <Message>The server side encryption configuration was not found</Message>
+</Error>"#))
+                    .unwrap();
+            }
+        } else {
+            return Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .body(Body::from("NoSuchBucket"))
+                .unwrap();
+        }
+    }
+
+    // Handle CORS deletion
+    if params.cors.is_some() {
+        let mut buckets = state.buckets.lock().unwrap();
+        if let Some(bucket_data) = buckets.get_mut(&bucket) {
+            if bucket_data.cors.is_some() {
+                bucket_data.cors = None;
+                info!("Deleted CORS configuration for bucket {}", bucket);
+
+                // Remove CORS file from disk
+                let cors_file = state.storage_path.join(&bucket).join(".cors");
+                if cors_file.exists() {
+                    if let Err(e) = fs::remove_file(&cors_file) {
+                        warn!("Failed to delete CORS file: {}", e);
+                    } else {
+                        debug!("CORS file deleted: {:?}", cors_file);
+                    }
+                }
+
+                return Response::builder()
+                    .status(StatusCode::NO_CONTENT)
+                    .body(Body::empty())
+                    .unwrap();
+            } else {
+                // No CORS to delete
+                return Response::builder()
+                    .status(StatusCode::NOT_FOUND)
+                    .header(header::CONTENT_TYPE, "application/xml")
+                    .body(Body::from(r#"<?xml version="1.0" encoding="UTF-8"?>
+<Error>
+    <Code>NoSuchCORSConfiguration</Code>
+    <Message>The CORS configuration does not exist</Message>
 </Error>"#))
                     .unwrap();
             }
@@ -1800,6 +2169,7 @@ async fn put_object(
                 versions: HashMap::new(),
                 policy: None,
                 encryption: None,
+                cors: None,
             });
 
         // Load versioning status from disk if not in memory
@@ -1943,6 +2313,7 @@ async fn put_object(
                     versions: HashMap::new(),
                     policy: None,
                     encryption: None,
+                    cors: None,
                 },
             );
             buckets.get_mut(&bucket).unwrap()

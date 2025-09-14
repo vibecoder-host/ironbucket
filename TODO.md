@@ -86,9 +86,17 @@ This document tracks all pending tasks, improvements, and features to be impleme
   - ✅ Return proper error when no encryption configured
 
 ### CORS
-- ⬜ **Store CORS configuration** (`src/cors.rs:26`)
-- ⬜ **Retrieve CORS configuration** (`src/cors.rs:31`)
-- ⬜ **Delete CORS configuration** (`src/cors.rs:36`)
+- ✅ **Store CORS configuration** (`src/main.rs:1057-1133`) - Completed 2025-09-14
+  - ✅ Parse JSON CORS configuration from AWS CLI
+  - ✅ Validate CORS rules and required fields
+  - ✅ Persist configuration to disk
+- ✅ **Retrieve CORS configuration** (`src/main.rs:633-750`) - Completed 2025-09-14
+  - ✅ GET bucket CORS configuration endpoint
+  - ✅ Return XML format for AWS CLI compatibility
+  - ✅ Load from memory or disk
+- ✅ **Delete CORS configuration** (`src/main.rs:1939-1979`) - Completed 2025-09-14
+  - ✅ DELETE bucket CORS configuration endpoint
+  - ✅ Remove configuration from memory and disk
 
 ### ACL (Access Control Lists)
 - ⬜ **Store ACL** (`src/acl.rs:46`)
@@ -270,5 +278,5 @@ This document tracks all pending tasks, improvements, and features to be impleme
 ---
 
 *Last Updated: 2025-09-14*
-*Total Tasks: 51 (Completed: 43, Pending: 8)*
-*Recent Progress: Encryption fully implemented and tested*
+*Total Tasks: 51 (Completed: 46, Pending: 5)*
+*Recent Progress: CORS fully implemented with JSON/XML support*
