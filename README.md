@@ -279,6 +279,18 @@ Contributions are welcome! Please ensure:
 3. Performance benchmarks show no regression
 4. Documentation is updated
 
+
+---
+
+## Support
+
+- **GitHub Issues**: [Report bugs](https://github.com/vibecoder-host/ironbucket/issues)
+- **Discussions**: [Ask questions](https://github.com/vibecoder-host/ironbucket/discussions)
+- **Security**: [Report vulnerabilities](SECURITY.md)
+
+
+---
+
 ## License
 
 This project is licensed under the GNU Affero General Public License v3.0 (AGPL-3.0) - see the LICENSE file for details.

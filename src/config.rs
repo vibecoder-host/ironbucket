@@ -86,9 +86,11 @@ impl Config {
             },
             auth: AuthConfig {
                 access_key_id: env::var("ACCESS_KEY_ID")
-                    .unwrap_or_else(|_| "minioadmin".to_string()),
+                    .or_else(|_| env::var("ACCESS_KEY"))
+                    .expect("ACCESS_KEY_ID or ACCESS_KEY environment variable must be set"),
                 secret_access_key: env::var("SECRET_ACCESS_KEY")
-                    .unwrap_or_else(|_| "minioadmin".to_string()),
+                    .or_else(|_| env::var("SECRET_KEY"))
+                    .expect("SECRET_ACCESS_KEY or SECRET_KEY environment variable must be set"),
                 region: env::var("REGION").unwrap_or_else(|_| "us-east-1".to_string()),
                 signature_version: env::var("SIGNATURE_VERSION")
                     .unwrap_or_else(|_| "v4".to_string()),

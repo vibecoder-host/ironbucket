@@ -445,9 +445,11 @@ async fn main() {
     fs::create_dir_all(&storage_path).unwrap();
     info!("Using storage path: {:?}", storage_path);
 
-    // Load credentials from environment or use defaults
-    let access_key = std::env::var("ACCESS_KEY").unwrap_or_else(|_| "minioadmin".to_string());
-    let secret_key = std::env::var("SECRET_KEY").unwrap_or_else(|_| "29d5bf40-b394-4923-bbf4-b1467964911d".to_string());
+    // Load credentials from environment variables (required)
+    let access_key = std::env::var("ACCESS_KEY")
+        .expect("ACCESS_KEY environment variable must be set");
+    let secret_key = std::env::var("SECRET_KEY")
+        .expect("SECRET_KEY environment variable must be set");
 
     let mut access_keys = HashMap::new();
     access_keys.insert(access_key.clone(), secret_key.clone());

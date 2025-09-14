@@ -41,8 +41,8 @@ All test configuration is managed through environment variables in `.env`:
 ```bash
 # S3 endpoint configuration
 S3_ENDPOINT=http://172.17.0.1:20000
-S3_ACCESS_KEY=minioadmin
-S3_SECRET_KEY=minioadmin
+S3_ACCESS_KEY=admin
+S3_SECRET_KEY=admin
 S3_REGION=us-east-1
 
 # Test configuration
