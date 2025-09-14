@@ -552,12 +552,38 @@ async fn handle_object_put(
 
         let mut uploads = state.multipart_uploads.lock().unwrap();
         if let Some(upload) = uploads.get_mut(upload_id) {
+            // Store part in memory
             upload.parts.insert(part_number, UploadPart {
                 part_number,
                 etag: etag.clone(),
                 size: data.len(),
-                data,
+                data: data.clone(),
             });
+
+            // Also persist part to disk
+            let multipart_dir = state.storage_path.join(&upload.bucket).join(".multipart").join(upload_id);
+            if let Err(e) = fs::create_dir_all(&multipart_dir) {
+                warn!("Failed to create multipart parts directory: {}", e);
+            }
+
+            let part_path = multipart_dir.join(format!("part-{}", part_number));
+            if let Err(e) = fs::write(&part_path, &data) {
+                warn!("Failed to write part {} to disk: {}", part_number, e);
+            }
+
+            // Save part metadata
+            let part_meta_path = multipart_dir.join(format!("part-{}.meta", part_number));
+            let part_metadata = serde_json::json!({
+                "part_number": part_number,
+                "etag": etag,
+                "size": data.len(),
+            });
+
+            if let Err(e) = fs::write(&part_meta_path, part_metadata.to_string()) {
+                warn!("Failed to write part metadata: {}", e);
+            } else {
+                info!("Uploaded part {} for upload {}, size: {} bytes", part_number, upload_id, data.len());
+            }
 
             return Response::builder()
                 .status(StatusCode::OK)
@@ -589,15 +615,36 @@ async fn handle_object_post(
         // Initiate multipart upload
         let upload_id = Uuid::new_v4().to_string();
 
+        let initiated = Utc::now();
         let upload = MultipartUpload {
             upload_id: upload_id.clone(),
             bucket: bucket.clone(),
             key: key.clone(),
             parts: HashMap::new(),
-            initiated: Utc::now(),
+            initiated,
         };
 
         state.multipart_uploads.lock().unwrap().insert(upload_id.clone(), upload);
+
+        // Persist multipart upload metadata to disk
+        let multipart_dir = state.storage_path.join(&bucket).join(".multipart");
+        if let Err(e) = fs::create_dir_all(&multipart_dir) {
+            warn!("Failed to create multipart directory: {}", e);
+        }
+
+        let upload_meta_path = multipart_dir.join(format!("{}.upload", upload_id));
+        let upload_metadata = serde_json::json!({
+            "upload_id": upload_id,
+            "bucket": bucket,
+            "key": key,
+            "initiated": initiated.to_rfc3339(),
+        });
+
+        if let Err(e) = fs::write(&upload_meta_path, upload_metadata.to_string()) {
+            warn!("Failed to write multipart upload metadata: {}", e);
+        } else {
+            info!("Initiated multipart upload: {} for {}/{}", upload_id, bucket, key);
+        }
 
         let xml = format!(r#"<?xml version="1.0" encoding="UTF-8"?>
 <InitiateMultipartUploadResult>
@@ -647,7 +694,34 @@ async fn handle_object_post(
                     .unwrap();
             }
 
-            // Update metadata
+            // Save object metadata
+            let metadata_path = object_path.with_extension("metadata");
+            let metadata = ObjectMetadata {
+                key: key.clone(),
+                size: combined_data.len() as u64,
+                etag: etag.clone(),
+                last_modified: Utc::now(),
+                content_type: "binary/octet-stream".to_string(), // Default for multipart
+                storage_class: "STANDARD".to_string(),
+                metadata: HashMap::new(),
+                version_id: None,
+            };
+
+            if let Ok(metadata_json) = serde_json::to_string(&metadata) {
+                if let Err(e) = fs::write(&metadata_path, metadata_json) {
+                    warn!("Failed to write multipart object metadata: {}", e);
+                } else {
+                    info!("Multipart upload completed: {}/{}, size: {} bytes", bucket, key, combined_data.len());
+                }
+            }
+
+            // Clean up multipart upload directory
+            let multipart_dir = state.storage_path.join(&bucket).join(".multipart").join(upload_id);
+            if let Err(e) = fs::remove_dir_all(&multipart_dir) {
+                warn!("Failed to clean up multipart directory: {}", e);
+            }
+
+            // Update in-memory metadata
             let mut buckets = state.buckets.lock().unwrap();
             let bucket_data = buckets.entry(bucket.clone()).or_insert_with(|| BucketData {
                 created: Utc::now(),
@@ -700,7 +774,20 @@ async fn handle_object_delete(
     if let Some(upload_id) = &params.upload_id {
         // Abort multipart upload
         let mut uploads = state.multipart_uploads.lock().unwrap();
-        if uploads.remove(upload_id).is_some() {
+        if let Some(upload) = uploads.remove(upload_id) {
+            // Clean up multipart upload directory and parts
+            let multipart_dir = state.storage_path.join(&upload.bucket).join(".multipart").join(upload_id);
+            if let Err(e) = fs::remove_dir_all(&multipart_dir) {
+                warn!("Failed to clean up multipart directory during abort: {}", e);
+            }
+
+            // Remove upload metadata file
+            let upload_meta_path = state.storage_path.join(&upload.bucket).join(".multipart").join(format!("{}.upload", upload_id));
+            if let Err(e) = fs::remove_file(&upload_meta_path) {
+                warn!("Failed to remove upload metadata file: {}", e);
+            }
+
+            info!("Aborted multipart upload: {}", upload_id);
             return StatusCode::NO_CONTENT.into_response();
         }
         return StatusCode::NOT_FOUND.into_response();
