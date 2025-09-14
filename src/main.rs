@@ -1747,7 +1747,7 @@ async fn handle_bucket_post(
         // Process deletions
         for obj in objects_to_delete {
             let object_path = state.storage_path.join(&bucket).join(&obj.key);
-            let metadata_path = object_path.with_extension("metadata");
+            let metadata_path = state.storage_path.join(&bucket).join(format!("{}.metadata", obj.key));
 
             // Check if object exists
             if !object_path.exists() {
@@ -2116,7 +2116,7 @@ async fn handle_object_post(
             }
 
             // Save object metadata
-            let metadata_path = object_path.with_extension("metadata");
+            let metadata_path = state.storage_path.join(&bucket).join(format!("{}.metadata", key));
             let metadata = ObjectMetadata {
                 key: key.clone(),
                 size: combined_data.len() as u64,
@@ -2792,7 +2792,16 @@ async fn put_object(
     };
 
     // Save metadata to a separate file
-    let metadata_path = object_path.with_extension("metadata");
+    // Append .metadata to the full filename (including extension)
+    let metadata_path = state.storage_path.join(&bucket).join(format!("{}.metadata", key));
+
+    // Ensure parent directory exists for metadata file
+    if let Some(parent) = metadata_path.parent() {
+        if let Err(e) = fs::create_dir_all(parent) {
+            warn!("Failed to create metadata parent directory: {}", e);
+        }
+    }
+
     let content_type = headers
         .get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
@@ -2936,7 +2945,7 @@ async fn get_object(
     };
 
     // Try to read metadata from file
-    let metadata_path = object_path.with_extension("metadata");
+    let metadata_path = state.storage_path.join(&bucket).join(format!("{}.metadata", key));
     let (data_to_return, etag, last_modified, content_type, encryption_header) = if let Ok(metadata_json) = fs::read_to_string(&metadata_path) {
         if let Ok(metadata) = serde_json::from_str::<ObjectMetadata>(&metadata_json) {
             // Check if object is encrypted and decrypt if necessary
@@ -3013,6 +3022,15 @@ async fn delete_object(
     let object_path = state.storage_path.join(&bucket).join(&key);
     let disk_deleted = fs::remove_file(&object_path).is_ok();
 
+    // Also delete metadata file
+    // Metadata is stored as filename.ext.metadata (not filename.metadata)
+    let metadata_path = state.storage_path.join(&bucket).join(format!("{}.metadata", key));
+    let metadata_deleted = fs::remove_file(&metadata_path).is_ok();
+
+    if metadata_deleted {
+        debug!("Deleted metadata file for {}/{}", bucket, key);
+    }
+
     // Delete from in-memory metadata
     let mut buckets = state.buckets.lock().unwrap();
     let memory_deleted = if let Some(bucket_data) = buckets.get_mut(&bucket) {
@@ -3021,7 +3039,7 @@ async fn delete_object(
         false
     };
 
-    if disk_deleted || memory_deleted {
+    if disk_deleted || memory_deleted || metadata_deleted {
         StatusCode::NO_CONTENT
     } else {
         StatusCode::NOT_FOUND
@@ -3043,7 +3061,7 @@ async fn head_object(
     }
 
     // Try to read metadata from file first
-    let metadata_path = object_path.with_extension("metadata");
+    let metadata_path = state.storage_path.join(&bucket).join(format!("{}.metadata", key));
     let (size, etag, last_modified, content_type) = if let Ok(metadata_json) = fs::read_to_string(&metadata_path) {
         if let Ok(metadata) = serde_json::from_str::<ObjectMetadata>(&metadata_json) {
             (metadata.size, metadata.etag, metadata.last_modified, metadata.content_type)
