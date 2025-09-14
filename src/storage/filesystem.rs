@@ -276,25 +276,63 @@ impl StorageBackend for FileSystemBackend {
         }
 
         let bucket_path = self.bucket_path(bucket);
-        let mut objects = Vec::new();
-        let mut prefixes = Vec::new();
+        let mut all_objects = Vec::new();
+        let mut all_prefixes = Vec::new();
 
-        // Simple implementation - can be optimized with pagination
+        // Collect all objects first
         self.list_objects_recursive(
             &bucket_path,
             &bucket_path,
             prefix,
             delimiter,
-            &mut objects,
-            &mut prefixes,
-            max_keys,
+            &mut all_objects,
+            &mut all_prefixes,
+            usize::MAX, // Get all objects first, then apply pagination
         ).await?;
+
+        // Sort objects by key for consistent pagination
+        all_objects.sort_by(|a, b| a.key.cmp(&b.key));
+        all_prefixes.sort();
+
+        // Apply pagination
+        let start_after = continuation_token.unwrap_or("");
+        let start_index = if !start_after.is_empty() {
+            // Find the index of the first object after the continuation token
+            all_objects.iter().position(|obj| obj.key > start_after).unwrap_or(all_objects.len())
+        } else {
+            0
+        };
+
+        // Get the requested page of objects
+        let end_index = (start_index + max_keys).min(all_objects.len());
+        let objects: Vec<ObjectMetadata> = all_objects[start_index..end_index].to_vec();
+
+        // Check if there are more objects
+        let is_truncated = end_index < all_objects.len();
+        let next_continuation_token = if is_truncated {
+            Some(objects.last().map(|o| o.key.clone()).unwrap_or_default())
+        } else {
+            None
+        };
+
+        // Apply pagination to prefixes if delimiter is set
+        let prefixes = if delimiter.is_some() {
+            let prefix_start_index = if !start_after.is_empty() {
+                all_prefixes.iter().position(|p| p > &start_after).unwrap_or(all_prefixes.len())
+            } else {
+                0
+            };
+            let prefix_end_index = (prefix_start_index + max_keys).min(all_prefixes.len());
+            all_prefixes[prefix_start_index..prefix_end_index].to_vec()
+        } else {
+            all_prefixes
+        };
 
         Ok(ListObjectsResult {
             objects,
             prefixes,
-            is_truncated: false,
-            next_continuation_token: None,
+            is_truncated,
+            next_continuation_token,
         })
     }
 
@@ -339,15 +377,14 @@ impl FileSystemBackend {
         let mut entries = fs::read_dir(current_path).await?;
 
         while let Some(entry) = entries.next_entry().await? {
-            if objects.len() >= max_keys {
-                break;
-            }
+            // Remove early termination for proper pagination
+            // Objects will be limited after sorting
 
             let path = entry.path();
             let relative_path = path.strip_prefix(base_path).unwrap();
             let key = relative_path.to_string_lossy().to_string();
 
-            // Skip metadata files
+            // Skip metadata files and hidden files
             if key.ends_with(".metadata") || key.starts_with(".") {
                 continue;
             }
@@ -365,19 +402,39 @@ impl FileSystemBackend {
                     base_path.file_name().unwrap().to_str().unwrap(),
                     &key
                 ).await {
-                    objects.push(metadata);
+                    if objects.len() < max_keys {
+                        objects.push(metadata);
+                    }
                 }
-            } else if entry.file_type().await?.is_dir() && delimiter.is_none() {
-                // Recursively list subdirectories when no delimiter
-                Box::pin(self.list_objects_recursive(
-                    base_path,
-                    &path,
-                    prefix,
-                    delimiter,
-                    objects,
-                    prefixes,
-                    max_keys,
-                )).await?;
+            } else if entry.file_type().await?.is_dir() {
+                if let Some(delim) = delimiter {
+                    // When delimiter is set, add directory as prefix
+                    let prefix_key = if key.ends_with(delim) {
+                        key.clone()
+                    } else {
+                        format!("{}{}", key, delim)
+                    };
+
+                    // Check if prefix matches filter
+                    if let Some(p) = prefix {
+                        if prefix_key.starts_with(p) && !prefixes.contains(&prefix_key) {
+                            prefixes.push(prefix_key);
+                        }
+                    } else if !prefixes.contains(&prefix_key) {
+                        prefixes.push(prefix_key);
+                    }
+                } else {
+                    // Recursively list subdirectories when no delimiter
+                    Box::pin(self.list_objects_recursive(
+                        base_path,
+                        &path,
+                        prefix,
+                        delimiter,
+                        objects,
+                        prefixes,
+                        max_keys,
+                    )).await?;
+                }
             }
         }
 

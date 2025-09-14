@@ -181,19 +181,6 @@ tar -xzf warp_0.7.11_Linux_x86_64.tar.gz
 ./warp delete --host=localhost:20000 ... # Test DELETE performance
 ```
 
-## Architecture
-
-```
-┌──────────────┐      ┌──────────────────┐     ┌─────────────┐
-│   S3 Client  │────▶│   IronBucket    │───▶│ File System │
-└──────────────┘      │                 │     └─────────────┘
-                     │  Axum Router    │
-                     │  Auth Middleware│     ┌─────────────┐
-                     │  Chunk Parser   │────▶│    Redis    │
-                     │  Object Handler │     │   (Cache)   │
-                     └──────────────────┘      └─────────────┘
-```
-
 ### Key Components
 
 - **Axum Web Framework**: High-performance async HTTP server
@@ -271,17 +258,18 @@ rm -rf s3/* redis-data/*
 docker-compose up -d
 ```
 
-## Future Enhancements
-
+## Recently completed
 - [x] Object versioning support (Completed)
 - [x] Bucket policies and IAM integration (Completed)
 - [x] Server-side encryption (Completed - AES-256-GCM)
 - [x] CORS configuration support (Completed)
-- [ ] Object lifecycle management
-- [ ] Event notifications
-- [ ] Cross-region replication
+- [x] Object lifecycle management
+
+## Future Enhancements
 - [ ] Bucket analytics and metrics
-- [ ] ACL (Access Control Lists) implementation
+- [ ] Replication
+- [ ] Event notifications
+
 
 ## Contributing
 

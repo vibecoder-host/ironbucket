@@ -527,6 +527,11 @@ struct BucketQueryParams {
     #[serde(rename = "max-keys")]
     max_keys: Option<usize>,
     prefix: Option<String>,
+    #[serde(rename = "continuation-token")]
+    continuation_token: Option<String>,
+    delimiter: Option<String>,
+    #[serde(rename = "list-type")]
+    list_type: Option<String>,
 }
 
 // Handle bucket GET with query parameters
@@ -1125,8 +1130,17 @@ async fn handle_bucket_get(
             .unwrap();
     }
 
-    // Default: list objects
-    list_objects_impl(State(state), bucket, params.prefix, params.max_keys).await
+    // Default: list objects (handles both v1 and v2)
+    // list-type=2 uses continuation-token, v1 uses marker
+    info!("Handling list objects request for bucket: {}, list_type: {:?}", bucket, params.list_type);
+    list_objects_impl(
+        State(state),
+        bucket,
+        params.prefix,
+        params.delimiter,
+        params.continuation_token,
+        params.max_keys
+    ).await
 }
 
 // Handle bucket PUT with query parameters
@@ -2490,9 +2504,12 @@ async fn list_objects_impl(
     state: State<AppState>,
     bucket: String,
     prefix: Option<String>,
+    delimiter: Option<String>,
+    continuation_token: Option<String>,
     max_keys: Option<usize>,
 ) -> Response {
-    debug!("Listing objects in bucket: {}", bucket);
+    info!("Listing objects in bucket: {} with prefix: {:?}, delimiter: {:?}, continuation_token: {:?}, max_keys: {:?}",
+           bucket, prefix, delimiter, continuation_token, max_keys);
 
     let buckets = state.buckets.lock().unwrap();
     let bucket_data = match buckets.get(&bucket) {
@@ -2503,29 +2520,99 @@ async fn list_objects_impl(
             .unwrap(),
     };
 
+    let prefix_str = prefix.as_deref().unwrap_or("");
+    let max_keys = max_keys.unwrap_or(1000);
+
+    // Collect all matching objects into a sorted vector for consistent pagination
+    let mut all_objects: Vec<_> = bucket_data.objects
+        .iter()
+        .filter(|(key, _)| key.starts_with(prefix_str))
+        .collect();
+    all_objects.sort_by_key(|(key, _)| key.as_str());
+
+    // Apply pagination
+    let start_after = continuation_token.as_deref().unwrap_or("");
+    let start_index = if !start_after.is_empty() {
+        // Find the index of the first object after the continuation token
+        all_objects.iter().position(|(key, _)| key.as_str() > start_after).unwrap_or(all_objects.len())
+    } else {
+        0
+    };
+
+    // Get the requested page of objects
+    let end_index = (start_index + max_keys).min(all_objects.len());
+    let page_objects = &all_objects[start_index..end_index];
+
+    // Check if there are more objects
+    let is_truncated = end_index < all_objects.len();
+    let next_continuation_token = if is_truncated {
+        page_objects.last().map(|(key, _)| key.clone())
+    } else {
+        None
+    };
+
+    info!("Pagination debug: all_objects.len()={}, start_index={}, end_index={}, is_truncated={}, next_token={:?}",
+           all_objects.len(), start_index, end_index, is_truncated, next_continuation_token);
+
+    // Build common prefixes when delimiter is set
+    let mut common_prefixes = Vec::new();
+    if let Some(delim) = &delimiter {
+        let mut seen_prefixes = std::collections::HashSet::new();
+        for (key, _) in &all_objects {
+            if let Some(idx) = key[prefix_str.len()..].find(delim) {
+                let prefix_with_delim = format!("{}{}",
+                    &key[..prefix_str.len() + idx], delim);
+                if seen_prefixes.insert(prefix_with_delim.clone()) {
+                    common_prefixes.push(prefix_with_delim);
+                }
+            }
+        }
+        common_prefixes.sort();
+    }
+
+    // Build XML response
     let mut xml = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <ListBucketResult>
     <Name>{}</Name>
-    <Prefix>{}</Prefix>
-    <MaxKeys>{}</MaxKeys>
-    <IsTruncated>false</IsTruncated>"#,
+    <Prefix>{}</Prefix>"#,
         bucket,
-        prefix.as_deref().unwrap_or(""),
-        max_keys.unwrap_or(1000)
+        prefix_str
     );
 
-    let prefix = prefix.as_deref().unwrap_or("");
-    let max_keys = max_keys.unwrap_or(1000);
-    let mut count = 0;
+    // Add delimiter if present
+    if let Some(delim) = delimiter {
+        xml.push_str(&format!("\n    <Delimiter>{}</Delimiter>", delim));
+    }
 
-    for (key, obj) in &bucket_data.objects {
-        if count >= max_keys {
-            break;
-        }
-        if key.starts_with(prefix) {
-            xml.push_str(&format!(
-                r#"
+    xml.push_str(&format!("\n    <MaxKeys>{}</MaxKeys>", max_keys));
+    xml.push_str(&format!("\n    <IsTruncated>{}</IsTruncated>", is_truncated));
+
+    // Add continuation token if present
+    if let Some(token) = &continuation_token {
+        xml.push_str(&format!("\n    <ContinuationToken>{}</ContinuationToken>", token));
+    }
+
+    // Add next continuation token if truncated
+    if let Some(next_token) = &next_continuation_token {
+        xml.push_str(&format!("\n    <NextContinuationToken>{}</NextContinuationToken>", next_token));
+    }
+
+    // Add common prefixes (folders) when delimiter is set
+    for prefix in common_prefixes {
+        xml.push_str(&format!(
+            r#"
+    <CommonPrefixes>
+        <Prefix>{}</Prefix>
+    </CommonPrefixes>"#,
+            prefix
+        ));
+    }
+
+    // Add objects
+    for (key, obj) in page_objects {
+        xml.push_str(&format!(
+            r#"
     <Contents>
         <Key>{}</Key>
         <LastModified>{}</LastModified>
@@ -2533,13 +2620,11 @@ async fn list_objects_impl(
         <Size>{}</Size>
         <StorageClass>STANDARD</StorageClass>
     </Contents>"#,
-                key,
-                obj.last_modified.to_rfc3339(),
-                obj.etag,
-                obj.size
-            ));
-            count += 1;
-        }
+            key,
+            obj.last_modified.to_rfc3339(),
+            obj.etag,
+            obj.size
+        ));
     }
 
     xml.push_str("\n</ListBucketResult>");

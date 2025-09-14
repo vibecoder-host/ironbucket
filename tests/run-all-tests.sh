@@ -63,6 +63,8 @@ run_test_suite "Object Versioning" "./test-versioning.sh"
 run_test_suite "Bucket Policies" "./test-bucket-policies.sh"
 run_test_suite "Encryption" "./test-encryption.sh"
 run_test_suite "CORS" "./test-cors.sh"
+run_test_suite "Lifecycle Management" "./test-lifecycle.sh"
+run_test_suite "Pagination" "./test-pagination.sh"
 
 # Performance tests are optional (they take longer)
 if [ "${RUN_PERFORMANCE_TESTS:-false}" = "true" ]; then
