@@ -1,0 +1,54 @@
+# Environment files
+.env
+.env.*
+*.env
+
+# Backup files
+*.bak
+*.backup
+*.old
+*.tmp
+*~
+
+# Logs
+*.log
+logs/
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# Storage and data
+./s3/*
+s3-node1/*
+s3-node2/*
+s3/*
+
+# Build outputs
+dist/
+build/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# OS files
+Thumbs.db
+
+# Temporary files
+temp/
+tmp/
+
+
+# Security and keys
+*.pem
+*.key
+*.crt
+*.p12
+private/
+secrets/

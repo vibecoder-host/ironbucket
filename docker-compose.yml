@@ -1,0 +1,38 @@
+version: '3.8'
+
+services:
+  rustybucket:
+    build: .
+    image: rustybucket:latest
+    container_name: rustybucket
+    ports:
+      - "172.17.0.1:20000:9000"
+    volumes:
+      - ./s3:/s3
+      - ./data:/app/data
+      - ./.env:/app/.env
+    environment:
+      - RUST_LOG=rustybucket=info,tower_http=info
+      - STORAGE_PATH=/s3
+      - DATABASE_URL=sqlite:///app/data/rustybucket.db
+      - REDIS_URL=redis://172.17.0.1:16379
+    restart: always
+    networks:
+      - rustybucket-network
+
+  # Optional: Redis for caching
+  redis:
+    image: redis:7-alpine
+    container_name: rustybucket-redis
+    ports:
+      - "172.17.0.1:16380:6379"
+    volumes:
+      - ./redis-data:/data
+    command: redis-server --appendonly yes
+    restart: always
+    networks:
+      - rustybucket-network
+
+networks:
+  rustybucket-network:
+    driver: bridge
