@@ -3,7 +3,6 @@ use crate::{
     cluster::ClusterManager,
     config::Config,
     error::Result,
-    metadata::MetadataStore,
     multipart::MultipartManager,
     s3::routes,
     storage::StorageBackend,
@@ -17,7 +16,6 @@ pub struct AppState {
     pub config: Config,
     pub storage: Arc<dyn StorageBackend>,
     pub cache: Arc<CacheManager>,
-    pub metadata: Arc<MetadataStore>,
     pub multipart: Arc<MultipartManager>,
     pub cluster: Option<Arc<ClusterManager>>,
 }
@@ -28,9 +26,6 @@ pub async fn run(config: Config) -> Result<()> {
 
     // Initialize cache manager
     let cache = Arc::new(CacheManager::new(&config).await?);
-
-    // Initialize metadata store
-    let metadata = Arc::new(MetadataStore::new(&config).await?);
 
     // Initialize multipart manager
     let multipart = Arc::new(MultipartManager::new(&config, storage.clone()).await?);
@@ -47,7 +42,6 @@ pub async fn run(config: Config) -> Result<()> {
         config: config.clone(),
         storage,
         cache,
-        metadata,
         multipart,
         cluster,
     });

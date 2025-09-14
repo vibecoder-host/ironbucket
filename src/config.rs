@@ -9,7 +9,6 @@ pub struct Config {
     pub storage: StorageConfig,
     pub auth: AuthConfig,
     pub redis: RedisConfig,
-    pub database: DatabaseConfig,
     pub cluster: ClusterConfig,
     pub performance: PerformanceConfig,
 }
@@ -44,13 +43,6 @@ pub struct RedisConfig {
     pub url: String,
     pub pool_size: usize,
     pub timeout_secs: u64,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct DatabaseConfig {
-    pub url: String,
-    pub max_connections: u32,
-    pub min_connections: u32,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -117,17 +109,6 @@ impl Config {
                     .parse()?,
                 timeout_secs: env::var("REDIS_TIMEOUT_SECS")
                     .unwrap_or_else(|_| "5".to_string())
-                    .parse()?,
-            },
-            database: DatabaseConfig {
-                url: env::var("DATABASE_URL").unwrap_or_else(|_| {
-                    "sqlite:///opt/app/ironbucket/data/ironbucket.db".to_string()
-                }),
-                max_connections: env::var("DB_MAX_CONNECTIONS")
-                    .unwrap_or_else(|_| "10".to_string())
-                    .parse()?,
-                min_connections: env::var("DB_MIN_CONNECTIONS")
-                    .unwrap_or_else(|_| "2".to_string())
                     .parse()?,
             },
             cluster: ClusterConfig {
