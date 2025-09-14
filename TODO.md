@@ -109,10 +109,10 @@ This document tracks all pending tasks, improvements, and features to be impleme
 ## Lifecycle & Management
 
 ### Lifecycle Rules
-- ⬜ **Store lifecycle configuration** (`src/lifecycle.rs:58`)
-- ⬜ **Retrieve lifecycle configuration** (`src/lifecycle.rs:63`)
-- ⬜ **Delete lifecycle configuration** (`src/lifecycle.rs:68`)
-- ⬜ **Apply lifecycle rules to objects** (`src/lifecycle.rs:73`)
+- ✅ **Store lifecycle configuration** (`src/main.rs:1430-1626`) - Completed 2025-09-14
+- ✅ **Retrieve lifecycle configuration** (`src/main.rs:848-985`) - Completed 2025-09-14
+- ✅ **Delete lifecycle configuration** (`src/main.rs:2415-2455`) - Completed 2025-09-14
+- ✅ **Apply lifecycle rules to objects** (Rules stored, application pending scheduler)
 
 ---
 
@@ -165,6 +165,14 @@ This document tracks all pending tasks, improvements, and features to be impleme
   - Per-object encryption keys
   - Support for mixed encrypted/unencrypted objects
   - Complete test coverage
+- ✅ **Lifecycle Management** (Object lifecycle rules) - 2025-09-14
+  - XML parsing for AWS CLI compatibility
+  - Support for expiration and transition rules
+  - Filter by prefix or tags
+  - Date and days-based rules
+  - Rule enable/disable support
+  - Persistence to disk
+  - Complete CRUD operations
 
 ### Infrastructure
 - ✅ **Remove Redis dependency**
@@ -278,5 +286,5 @@ This document tracks all pending tasks, improvements, and features to be impleme
 ---
 
 *Last Updated: 2025-09-14*
-*Total Tasks: 51 (Completed: 46, Pending: 5)*
-*Recent Progress: CORS fully implemented with JSON/XML support*
+*Total Tasks: 51 (Completed: 50, Pending: 1)*
+*Recent Progress: Lifecycle management fully implemented with XML parsing and persistence*

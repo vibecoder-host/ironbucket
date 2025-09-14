@@ -10,4 +10,6 @@ services:
     environment:
       - RUST_LOG=ironbucket=info,tower_http=info
       - STORAGE_PATH=/s3
+      - ACCESS_KEY=root
+      - SECRET_KEY=xxxxxxxxxxxxxxx
     restart: always

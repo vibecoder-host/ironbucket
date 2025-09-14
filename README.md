@@ -75,8 +75,6 @@ RUST_LOG=ironbucket=info          # Logging level
 ACCESS_KEY=root
 SECRET_KEY=xxxxxxxxxxxxxxxxxxxxx
 
-# Optional: Redis Cache
-REDIS_URL=redis://172.17.0.1:16380
 ```
 
 ## Docker Compose Configuration
@@ -91,16 +89,7 @@ services:
       - ./s3:/s3
     environment:
       - STORAGE_PATH=/s3
-      - RUST_LOG=ironbucket=info,tower_http=info
-      - REDIS_URL=redis://172.17.0.1:16380
-    restart: always
-
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "172.17.0.1:16380:6379"
-    volumes:
-      - ./redis-data:/data
+      - RUST_LOG=ironbucket=warn,tower_http=warn
     restart: always
 ```
 
@@ -170,7 +159,7 @@ aws --endpoint-url $AWS_ENDPOINT s3 rb s3://my-bucket
 
 ## Benchmarking
 
-### Using MinIO Warp
+### Using MinIO Warp benchmark tool
 
 ```bash
 # Download warp
@@ -195,14 +184,14 @@ tar -xzf warp_0.7.11_Linux_x86_64.tar.gz
 ## Architecture
 
 ```
-┌──────────────┐     ┌──────────────────┐     ┌─────────────┐
-│   S3 Client  │────▶│   IronBucket    │────▶│ File System │
-└──────────────┘     │                  │     └─────────────┘
-                     │  - Axum Router    │
-                     │  - Auth Middleware│     ┌─────────────┐
-                     │  - Chunk Parser   │────▶│    Redis    │
-                     │  - Object Handler │     │   (Cache)   │
-                     └──────────────────┘     └─────────────┘
+┌──────────────┐      ┌──────────────────┐     ┌─────────────┐
+│   S3 Client  │────▶│   IronBucket    │───▶│ File System │
+└──────────────┘      │                 │     └─────────────┘
+                     │  Axum Router    │
+                     │  Auth Middleware│     ┌─────────────┐
+                     │  Chunk Parser   │────▶│    Redis    │
+                     │  Object Handler │     │   (Cache)   │
+                     └──────────────────┘      └─────────────┘
 ```
 
 ### Key Components
@@ -222,8 +211,6 @@ du -sh /opt/app/ironbucket/s3/
 # Clean up all storage
 rm -rf /opt/app/ironbucket/s3/*
 
-# Clean Redis cache
-docker exec ironbucket-redis redis-cli FLUSHALL
 ```
 
 ## Monitoring
@@ -286,15 +273,15 @@ docker-compose up -d
 
 ## Future Enhancements
 
-- [ ] Object versioning support
-- [ ] Bucket policies and IAM integration
-- [ ] Server-side encryption
+- [x] Object versioning support (Completed)
+- [x] Bucket policies and IAM integration (Completed)
+- [x] Server-side encryption (Completed - AES-256-GCM)
+- [x] CORS configuration support (Completed)
 - [ ] Object lifecycle management
 - [ ] Event notifications
 - [ ] Cross-region replication
-- [ ] CloudFront integration
-- [ ] S3 Select support
 - [ ] Bucket analytics and metrics
+- [ ] ACL (Access Control Lists) implementation
 
 ## Contributing
 

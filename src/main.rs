@@ -244,6 +244,7 @@ struct BucketData {
     policy: Option<String>, // JSON policy document
     encryption: Option<BucketEncryption>, // Bucket encryption configuration
     cors: Option<CorsConfiguration>, // CORS configuration
+    lifecycle: Option<LifecycleConfiguration>, // Lifecycle configuration
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -272,6 +273,99 @@ struct CorsRule {
     max_age_seconds: Option<u32>,
     #[serde(rename = "ID", skip_serializing_if = "Option::is_none")]
     id: Option<String>,
+}
+
+// Lifecycle configuration structures
+#[derive(Clone, Serialize, Deserialize, Debug)]
+struct LifecycleConfiguration {
+    #[serde(rename = "Rules")]
+    rules: Vec<LifecycleRule>,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+struct LifecycleRule {
+    #[serde(rename = "ID", skip_serializing_if = "Option::is_none")]
+    id: Option<String>,
+    #[serde(rename = "Status")]
+    status: String, // "Enabled" or "Disabled"
+    #[serde(rename = "Filter", skip_serializing_if = "Option::is_none")]
+    filter: Option<LifecycleFilter>,
+    #[serde(rename = "Transitions", skip_serializing_if = "Option::is_none")]
+    transitions: Option<Vec<LifecycleTransition>>,
+    #[serde(rename = "Expiration", skip_serializing_if = "Option::is_none")]
+    expiration: Option<LifecycleExpiration>,
+    #[serde(rename = "NoncurrentVersionTransitions", skip_serializing_if = "Option::is_none")]
+    noncurrent_version_transitions: Option<Vec<NoncurrentVersionTransition>>,
+    #[serde(rename = "NoncurrentVersionExpiration", skip_serializing_if = "Option::is_none")]
+    noncurrent_version_expiration: Option<NoncurrentVersionExpiration>,
+    #[serde(rename = "AbortIncompleteMultipartUpload", skip_serializing_if = "Option::is_none")]
+    abort_incomplete_multipart_upload: Option<AbortIncompleteMultipartUpload>,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+struct LifecycleFilter {
+    #[serde(rename = "Prefix", skip_serializing_if = "Option::is_none")]
+    prefix: Option<String>,
+    #[serde(rename = "Tag", skip_serializing_if = "Option::is_none")]
+    tag: Option<LifecycleTag>,
+    #[serde(rename = "And", skip_serializing_if = "Option::is_none")]
+    and: Option<LifecycleAnd>,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+struct LifecycleAnd {
+    #[serde(rename = "Prefix", skip_serializing_if = "Option::is_none")]
+    prefix: Option<String>,
+    #[serde(rename = "Tags", skip_serializing_if = "Option::is_none")]
+    tags: Option<Vec<LifecycleTag>>,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+struct LifecycleTag {
+    #[serde(rename = "Key")]
+    key: String,
+    #[serde(rename = "Value")]
+    value: String,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+struct LifecycleTransition {
+    #[serde(rename = "Days", skip_serializing_if = "Option::is_none")]
+    days: Option<u32>,
+    #[serde(rename = "Date", skip_serializing_if = "Option::is_none")]
+    date: Option<String>,
+    #[serde(rename = "StorageClass")]
+    storage_class: String,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+struct LifecycleExpiration {
+    #[serde(rename = "Days", skip_serializing_if = "Option::is_none")]
+    days: Option<u32>,
+    #[serde(rename = "Date", skip_serializing_if = "Option::is_none")]
+    date: Option<String>,
+    #[serde(rename = "ExpiredObjectDeleteMarker", skip_serializing_if = "Option::is_none")]
+    expired_object_delete_marker: Option<bool>,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+struct NoncurrentVersionTransition {
+    #[serde(rename = "NoncurrentDays")]
+    noncurrent_days: u32,
+    #[serde(rename = "StorageClass")]
+    storage_class: String,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+struct NoncurrentVersionExpiration {
+    #[serde(rename = "NoncurrentDays")]
+    noncurrent_days: u32,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+struct AbortIncompleteMultipartUpload {
+    #[serde(rename = "DaysAfterInitiation")]
+    days_after_initiation: u32,
 }
 
 #[derive(Clone)]
@@ -351,9 +445,14 @@ async fn main() {
     fs::create_dir_all(&storage_path).unwrap();
     info!("Using storage path: {:?}", storage_path);
 
-    // Initialize with default MinIO credentials
+    // Load credentials from environment or use defaults
+    let access_key = std::env::var("ACCESS_KEY").unwrap_or_else(|_| "minioadmin".to_string());
+    let secret_key = std::env::var("SECRET_KEY").unwrap_or_else(|_| "29d5bf40-b394-4923-bbf4-b1467964911d".to_string());
+
     let mut access_keys = HashMap::new();
-    access_keys.insert("minioadmin".to_string(), "29d5bf40-b394-4923-bbf4-b1467964911d".to_string());
+    access_keys.insert(access_key.clone(), secret_key.clone());
+
+    info!("Using access key: {}", access_key);
 
     let state = AppState {
         storage_path,
@@ -422,6 +521,7 @@ struct BucketQueryParams {
     policy: Option<String>,
     encryption: Option<String>,
     cors: Option<String>,
+    lifecycle: Option<String>,
     uploads: Option<String>,
     delete: Option<String>,
     #[serde(rename = "max-keys")]
@@ -746,6 +846,145 @@ async fn handle_bucket_get(
 <Error>
     <Code>NoSuchCORSConfiguration</Code>
     <Message>The CORS configuration does not exist</Message>
+</Error>"#))
+            .unwrap();
+    }
+
+    if params.lifecycle.is_some() {
+        // Return bucket lifecycle configuration
+        let buckets = state.buckets.lock().unwrap();
+
+        if let Some(bucket_data) = buckets.get(&bucket) {
+            if let Some(ref lifecycle) = bucket_data.lifecycle {
+                // Return lifecycle configuration as XML
+                let mut lifecycle_xml = String::from(r#"<?xml version="1.0" encoding="UTF-8"?>
+<LifecycleConfiguration>"#);
+
+                for rule in &lifecycle.rules {
+                    lifecycle_xml.push_str("\n  <Rule>");
+
+                    if let Some(ref id) = rule.id {
+                        lifecycle_xml.push_str(&format!("\n    <ID>{}</ID>", id));
+                    }
+
+                    lifecycle_xml.push_str(&format!("\n    <Status>{}</Status>", rule.status));
+
+                    // Add Filter if present
+                    if let Some(ref filter) = rule.filter {
+                        lifecycle_xml.push_str("\n    <Filter>");
+                        if let Some(ref prefix) = filter.prefix {
+                            lifecycle_xml.push_str(&format!("\n      <Prefix>{}</Prefix>", prefix));
+                        }
+                        if let Some(ref tag) = filter.tag {
+                            lifecycle_xml.push_str(&format!("\n      <Tag>\n        <Key>{}</Key>\n        <Value>{}</Value>\n      </Tag>", tag.key, tag.value));
+                        }
+                        lifecycle_xml.push_str("\n    </Filter>");
+                    }
+
+                    // Add Expiration if present
+                    if let Some(ref expiration) = rule.expiration {
+                        lifecycle_xml.push_str("\n    <Expiration>");
+                        if let Some(days) = expiration.days {
+                            lifecycle_xml.push_str(&format!("\n      <Days>{}</Days>", days));
+                        }
+                        if let Some(ref date) = expiration.date {
+                            lifecycle_xml.push_str(&format!("\n      <Date>{}</Date>", date));
+                        }
+                        lifecycle_xml.push_str("\n    </Expiration>");
+                    }
+
+                    // Add Transitions if present
+                    if let Some(ref transitions) = rule.transitions {
+                        for transition in transitions {
+                            lifecycle_xml.push_str("\n    <Transition>");
+                            if let Some(days) = transition.days {
+                                lifecycle_xml.push_str(&format!("\n      <Days>{}</Days>", days));
+                            }
+                            if let Some(ref date) = transition.date {
+                                lifecycle_xml.push_str(&format!("\n      <Date>{}</Date>", date));
+                            }
+                            lifecycle_xml.push_str(&format!("\n      <StorageClass>{}</StorageClass>", transition.storage_class));
+                            lifecycle_xml.push_str("\n    </Transition>");
+                        }
+                    }
+
+                    lifecycle_xml.push_str("\n  </Rule>");
+                }
+
+                lifecycle_xml.push_str("\n</LifecycleConfiguration>");
+
+                return Response::builder()
+                    .status(StatusCode::OK)
+                    .header(header::CONTENT_TYPE, "application/xml")
+                    .body(Body::from(lifecycle_xml))
+                    .unwrap();
+            } else {
+                // Try to load from disk if not in memory
+                let lifecycle_file = state.storage_path.join(&bucket).join(".lifecycle");
+                if lifecycle_file.exists() {
+                    if let Ok(lifecycle_json) = fs::read_to_string(&lifecycle_file) {
+                        if let Ok(lifecycle) = serde_json::from_str::<LifecycleConfiguration>(&lifecycle_json) {
+                            // Generate XML from loaded lifecycle config
+                            let mut lifecycle_xml = String::from(r#"<?xml version="1.0" encoding="UTF-8"?>
+<LifecycleConfiguration>"#);
+
+                            for rule in &lifecycle.rules {
+                                lifecycle_xml.push_str("\n  <Rule>");
+
+                                if let Some(ref id) = rule.id {
+                                    lifecycle_xml.push_str(&format!("\n    <ID>{}</ID>", id));
+                                }
+
+                                lifecycle_xml.push_str(&format!("\n    <Status>{}</Status>", rule.status));
+
+                                // Add Filter if present
+                                if let Some(ref filter) = rule.filter {
+                                    lifecycle_xml.push_str("\n    <Filter>");
+                                    if let Some(ref prefix) = filter.prefix {
+                                        lifecycle_xml.push_str(&format!("\n      <Prefix>{}</Prefix>", prefix));
+                                    }
+                                    if let Some(ref tag) = filter.tag {
+                                        lifecycle_xml.push_str(&format!("\n      <Tag>\n        <Key>{}</Key>\n        <Value>{}</Value>\n      </Tag>", tag.key, tag.value));
+                                    }
+                                    lifecycle_xml.push_str("\n    </Filter>");
+                                }
+
+                                // Add Expiration if present
+                                if let Some(ref expiration) = rule.expiration {
+                                    lifecycle_xml.push_str("\n    <Expiration>");
+                                    if let Some(days) = expiration.days {
+                                        lifecycle_xml.push_str(&format!("\n      <Days>{}</Days>", days));
+                                    }
+                                    if let Some(ref date) = expiration.date {
+                                        lifecycle_xml.push_str(&format!("\n      <Date>{}</Date>", date));
+                                    }
+                                    lifecycle_xml.push_str("\n    </Expiration>");
+                                }
+
+                                lifecycle_xml.push_str("\n  </Rule>");
+                            }
+
+                            lifecycle_xml.push_str("\n</LifecycleConfiguration>");
+
+                            return Response::builder()
+                                .status(StatusCode::OK)
+                                .header(header::CONTENT_TYPE, "application/xml")
+                                .body(Body::from(lifecycle_xml))
+                                .unwrap();
+                        }
+                    }
+                }
+            }
+        }
+
+        // No lifecycle configuration found
+        return Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .header(header::CONTENT_TYPE, "application/xml")
+            .body(Body::from(r#"<?xml version="1.0" encoding="UTF-8"?>
+<Error>
+    <Code>NoSuchLifecycleConfiguration</Code>
+    <Message>The lifecycle configuration does not exist</Message>
 </Error>"#))
             .unwrap();
     }
@@ -1178,6 +1417,204 @@ async fn handle_bucket_put(
                     warn!("Failed to persist CORS configuration: {}", e);
                 } else {
                     debug!("CORS configuration persisted to: {:?}", cors_file);
+                }
+            }
+        } else {
+            return Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .body(Body::from("NoSuchBucket"))
+                .unwrap();
+        }
+
+        return Response::builder()
+            .status(StatusCode::OK)
+            .body(Body::empty())
+            .unwrap();
+    }
+
+    if params.lifecycle.is_some() {
+        // Parse lifecycle configuration from body (XML format from AWS CLI)
+        let body_str = String::from_utf8_lossy(&body);
+        debug!("Lifecycle configuration body: {}", body_str);
+
+        // Parse XML to extract lifecycle rules
+        let mut lifecycle_rules = Vec::new();
+
+        // Split by Rule tags to parse each rule
+        let rule_parts: Vec<&str> = body_str.split("<Rule>").collect();
+        for (i, rule_part) in rule_parts.iter().enumerate() {
+            if i == 0 { continue; } // Skip the part before first Rule
+
+            let mut id = None;
+            let mut status = String::from("Enabled");
+            let mut filter = None;
+            let mut expiration = None;
+            let mut transitions = None;
+
+            // Extract ID
+            if let Some(id_start) = rule_part.find("<ID>") {
+                if let Some(id_end) = rule_part.find("</ID>") {
+                    id = Some(rule_part[id_start + 4..id_end].to_string());
+                }
+            }
+
+            // Extract Status
+            if let Some(status_start) = rule_part.find("<Status>") {
+                if let Some(status_end) = rule_part.find("</Status>") {
+                    status = rule_part[status_start + 8..status_end].to_string();
+                }
+            }
+
+            // Extract Filter
+            if let Some(filter_start) = rule_part.find("<Filter>") {
+                if let Some(filter_end) = rule_part.find("</Filter>") {
+                    let filter_xml = &rule_part[filter_start + 8..filter_end];
+                    let mut prefix = None;
+                    let mut tag = None;
+
+                    // Extract Prefix
+                    if let Some(prefix_start) = filter_xml.find("<Prefix>") {
+                        if let Some(prefix_end) = filter_xml.find("</Prefix>") {
+                            prefix = Some(filter_xml[prefix_start + 8..prefix_end].to_string());
+                        }
+                    }
+
+                    // Extract Tag
+                    if let Some(tag_start) = filter_xml.find("<Tag>") {
+                        if let Some(tag_end) = filter_xml.find("</Tag>") {
+                            let tag_xml = &filter_xml[tag_start + 5..tag_end];
+                            let mut key = String::new();
+                            let mut value = String::new();
+
+                            if let Some(key_start) = tag_xml.find("<Key>") {
+                                if let Some(key_end) = tag_xml.find("</Key>") {
+                                    key = tag_xml[key_start + 5..key_end].to_string();
+                                }
+                            }
+                            if let Some(value_start) = tag_xml.find("<Value>") {
+                                if let Some(value_end) = tag_xml.find("</Value>") {
+                                    value = tag_xml[value_start + 7..value_end].to_string();
+                                }
+                            }
+
+                            if !key.is_empty() {
+                                tag = Some(LifecycleTag { key, value });
+                            }
+                        }
+                    }
+
+                    if prefix.is_some() || tag.is_some() {
+                        filter = Some(LifecycleFilter {
+                            prefix,
+                            tag,
+                            and: None,
+                        });
+                    }
+                }
+            }
+
+            // Extract Expiration
+            if let Some(exp_start) = rule_part.find("<Expiration>") {
+                if let Some(exp_end) = rule_part.find("</Expiration>") {
+                    let exp_xml = &rule_part[exp_start + 12..exp_end];
+                    let mut days = None;
+                    let mut date = None;
+
+                    if let Some(days_start) = exp_xml.find("<Days>") {
+                        if let Some(days_end) = exp_xml.find("</Days>") {
+                            if let Ok(d) = exp_xml[days_start + 6..days_end].parse::<u32>() {
+                                days = Some(d);
+                            }
+                        }
+                    }
+
+                    if let Some(date_start) = exp_xml.find("<Date>") {
+                        if let Some(date_end) = exp_xml.find("</Date>") {
+                            date = Some(exp_xml[date_start + 6..date_end].to_string());
+                        }
+                    }
+
+                    expiration = Some(LifecycleExpiration {
+                        days,
+                        date,
+                        expired_object_delete_marker: None,
+                    });
+                }
+            }
+
+            // Extract Transitions
+            let transition_parts: Vec<&str> = rule_part.split("<Transition>").collect();
+            if transition_parts.len() > 1 {
+                let mut trans_list = Vec::new();
+                for (j, trans_part) in transition_parts.iter().enumerate() {
+                    if j == 0 { continue; }
+                    if let Some(end) = trans_part.find("</Transition>") {
+                        let trans_xml = &trans_part[..end];
+                        let mut days = None;
+                        let mut date = None;
+                        let mut storage_class = String::from("STANDARD_IA");
+
+                        if let Some(days_start) = trans_xml.find("<Days>") {
+                            if let Some(days_end) = trans_xml.find("</Days>") {
+                                if let Ok(d) = trans_xml[days_start + 6..days_end].parse::<u32>() {
+                                    days = Some(d);
+                                }
+                            }
+                        }
+
+                        if let Some(date_start) = trans_xml.find("<Date>") {
+                            if let Some(date_end) = trans_xml.find("</Date>") {
+                                date = Some(trans_xml[date_start + 6..date_end].to_string());
+                            }
+                        }
+
+                        if let Some(sc_start) = trans_xml.find("<StorageClass>") {
+                            if let Some(sc_end) = trans_xml.find("</StorageClass>") {
+                                storage_class = trans_xml[sc_start + 14..sc_end].to_string();
+                            }
+                        }
+
+                        trans_list.push(LifecycleTransition {
+                            days,
+                            date,
+                            storage_class,
+                        });
+                    }
+                }
+                if !trans_list.is_empty() {
+                    transitions = Some(trans_list);
+                }
+            }
+
+            lifecycle_rules.push(LifecycleRule {
+                id,
+                status,
+                filter,
+                transitions,
+                expiration,
+                noncurrent_version_transitions: None,
+                noncurrent_version_expiration: None,
+                abort_incomplete_multipart_upload: None,
+            });
+        }
+
+        let lifecycle_config = LifecycleConfiguration {
+            rules: lifecycle_rules,
+        };
+
+        // Store lifecycle configuration
+        let mut buckets = state.buckets.lock().unwrap();
+        if let Some(bucket_data) = buckets.get_mut(&bucket) {
+            bucket_data.lifecycle = Some(lifecycle_config.clone());
+            info!("Set lifecycle configuration for bucket {}", bucket);
+
+            // Persist to disk
+            let lifecycle_file = state.storage_path.join(&bucket).join(".lifecycle");
+            if let Ok(json) = serde_json::to_string_pretty(&lifecycle_config) {
+                if let Err(e) = fs::write(&lifecycle_file, json) {
+                    warn!("Failed to persist lifecycle configuration: {}", e);
+                } else {
+                    debug!("Lifecycle configuration persisted to {:?}", lifecycle_file);
                 }
             }
         } else {
@@ -1700,6 +2137,7 @@ async fn handle_object_post(
                 policy: None,
                 encryption: None,
                 cors: None,
+                lifecycle: None,
             });
 
             bucket_data.objects.insert(key.clone(), ObjectData {
@@ -1833,6 +2271,7 @@ async fn create_bucket(
             policy: None,
             encryption: None,
             cors: None,
+            lifecycle: None,
         },
     );
 
@@ -1967,6 +2406,48 @@ async fn delete_bucket(
 <Error>
     <Code>NoSuchCORSConfiguration</Code>
     <Message>The CORS configuration does not exist</Message>
+</Error>"#))
+                    .unwrap();
+            }
+        } else {
+            return Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .body(Body::from("NoSuchBucket"))
+                .unwrap();
+        }
+    }
+
+    // Handle lifecycle deletion
+    if params.lifecycle.is_some() {
+        let mut buckets = state.buckets.lock().unwrap();
+        if let Some(bucket_data) = buckets.get_mut(&bucket) {
+            if bucket_data.lifecycle.is_some() {
+                bucket_data.lifecycle = None;
+                info!("Deleted lifecycle configuration for bucket {}", bucket);
+
+                // Remove lifecycle file from disk
+                let lifecycle_file = state.storage_path.join(&bucket).join(".lifecycle");
+                if lifecycle_file.exists() {
+                    if let Err(e) = fs::remove_file(&lifecycle_file) {
+                        warn!("Failed to delete lifecycle file: {}", e);
+                    } else {
+                        debug!("Lifecycle file deleted: {:?}", lifecycle_file);
+                    }
+                }
+
+                return Response::builder()
+                    .status(StatusCode::NO_CONTENT)
+                    .body(Body::empty())
+                    .unwrap();
+            } else {
+                // No lifecycle to delete
+                return Response::builder()
+                    .status(StatusCode::NOT_FOUND)
+                    .header(header::CONTENT_TYPE, "application/xml")
+                    .body(Body::from(r#"<?xml version="1.0" encoding="UTF-8"?>
+<Error>
+    <Code>NoSuchLifecycleConfiguration</Code>
+    <Message>The lifecycle configuration does not exist</Message>
 </Error>"#))
                     .unwrap();
             }
@@ -2170,6 +2651,7 @@ async fn put_object(
                 policy: None,
                 encryption: None,
                 cors: None,
+                lifecycle: None,
             });
 
         // Load versioning status from disk if not in memory
@@ -2314,6 +2796,7 @@ async fn put_object(
                     policy: None,
                     encryption: None,
                     cors: None,
+                    lifecycle: None,
                 },
             );
             buckets.get_mut(&bucket).unwrap()
