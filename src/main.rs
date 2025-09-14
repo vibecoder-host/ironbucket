@@ -108,6 +108,8 @@ fn find_sequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 struct BucketData {
     created: chrono::DateTime<Utc>,
     objects: HashMap<String, ObjectData>,
+    versioning_status: Option<String>, // "Enabled", "Suspended", or None
+    versions: HashMap<String, Vec<ObjectVersion>>, // key -> list of versions
 }
 
 #[derive(Clone)]
@@ -116,6 +118,17 @@ struct ObjectData {
     etag: String,
     last_modified: chrono::DateTime<Utc>,
     size: usize,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct ObjectVersion {
+    version_id: String,
+    data: Vec<u8>,
+    etag: String,
+    last_modified: chrono::DateTime<Utc>,
+    size: usize,
+    is_latest: bool,
+    is_delete_marker: bool,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -234,6 +247,7 @@ async fn handle_root_post(
 struct BucketQueryParams {
     location: Option<String>,
     versioning: Option<String>,
+    versions: Option<String>,
     acl: Option<String>,
     uploads: Option<String>,
     delete: Option<String>,
@@ -275,10 +289,30 @@ async fn handle_bucket_get(
 
     if params.versioning.is_some() {
         // Return versioning status
-        let versioning_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+        let buckets = state.buckets.lock().unwrap();
+        let status = if let Some(bucket_data) = buckets.get(&bucket) {
+            bucket_data.versioning_status.clone()
+        } else {
+            // Try to load from disk if not in memory
+            let versioning_file = state.storage_path.join(&bucket).join(".versioning");
+            if versioning_file.exists() {
+                fs::read_to_string(&versioning_file).ok()
+            } else {
+                None
+            }
+        };
+
+        let versioning_xml = if let Some(status) = status {
+            format!(r#"<?xml version="1.0" encoding="UTF-8"?>
 <VersioningConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
-    <Status>Suspended</Status>
-</VersioningConfiguration>"#;
+    <Status>{}</Status>
+</VersioningConfiguration>"#, status)
+        } else {
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<VersioningConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+</VersioningConfiguration>"#.to_string()
+        };
+
         return Response::builder()
             .status(StatusCode::OK)
             .header(header::CONTENT_TYPE, "application/xml")
@@ -339,6 +373,114 @@ async fn handle_bucket_get(
             .unwrap();
     }
 
+    // List object versions
+    if params.versions.is_some() {
+        let buckets = state.buckets.lock().unwrap();
+        let bucket_data = buckets.get(&bucket);
+
+        let mut xml = format!(r#"<?xml version="1.0" encoding="UTF-8"?>
+<ListVersionsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+    <Name>{}</Name>
+    <Prefix>{}</Prefix>
+    <MaxKeys>{}</MaxKeys>
+    <IsTruncated>false</IsTruncated>"#,
+            bucket,
+            params.prefix.as_deref().unwrap_or(""),
+            params.max_keys.unwrap_or(1000)
+        );
+
+        if let Some(bucket_data) = bucket_data {
+            let prefix = params.prefix.as_deref().unwrap_or("");
+            let max_keys = params.max_keys.unwrap_or(1000);
+            let mut count = 0;
+
+            // List current objects as versions
+            for (key, obj) in &bucket_data.objects {
+                if count >= max_keys {
+                    break;
+                }
+                if !prefix.is_empty() && !key.starts_with(prefix) {
+                    continue;
+                }
+
+                xml.push_str(&format!(r#"
+    <Version>
+        <Key>{}</Key>
+        <VersionId>null</VersionId>
+        <IsLatest>true</IsLatest>
+        <LastModified>{}</LastModified>
+        <ETag>"{}"</ETag>
+        <Size>{}</Size>
+        <StorageClass>STANDARD</StorageClass>
+    </Version>"#,
+                    key,
+                    obj.last_modified.to_rfc3339(),
+                    obj.etag,
+                    obj.size
+                ));
+                count += 1;
+            }
+
+            // List versioned objects
+            for (key, versions) in &bucket_data.versions {
+                if count >= max_keys {
+                    break;
+                }
+                if !prefix.is_empty() && !key.starts_with(prefix) {
+                    continue;
+                }
+
+                for version in versions {
+                    if count >= max_keys {
+                        break;
+                    }
+
+                    if version.is_delete_marker {
+                        xml.push_str(&format!(r#"
+    <DeleteMarker>
+        <Key>{}</Key>
+        <VersionId>{}</VersionId>
+        <IsLatest>{}</IsLatest>
+        <LastModified>{}</LastModified>
+    </DeleteMarker>"#,
+                            key,
+                            version.version_id,
+                            version.is_latest,
+                            version.last_modified.to_rfc3339()
+                        ));
+                    } else {
+                        xml.push_str(&format!(r#"
+    <Version>
+        <Key>{}</Key>
+        <VersionId>{}</VersionId>
+        <IsLatest>{}</IsLatest>
+        <LastModified>{}</LastModified>
+        <ETag>"{}"</ETag>
+        <Size>{}</Size>
+        <StorageClass>STANDARD</StorageClass>
+    </Version>"#,
+                            key,
+                            version.version_id,
+                            version.is_latest,
+                            version.last_modified.to_rfc3339(),
+                            version.etag,
+                            version.size
+                        ));
+                    }
+                    count += 1;
+                }
+            }
+        }
+
+        xml.push_str("\n</ListVersionsResult>");
+
+        return Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, "application/xml")
+            .body(Body::from(xml))
+            .unwrap();
+    }
+
     // Default: list objects
     list_objects_impl(State(state), bucket, params.prefix, params.max_keys).await
 }
@@ -348,12 +490,44 @@ async fn handle_bucket_put(
     State(state): State<AppState>,
     Path(bucket): Path<String>,
     Query(params): Query<BucketQueryParams>,
-    _body: Bytes,
+    body: Bytes,
 ) -> impl IntoResponse {
     debug!("PUT bucket: {} with params: {:?}", bucket, params);
 
     if params.versioning.is_some() {
-        // Set versioning (just accept but don't actually implement)
+        // Parse versioning configuration from body
+        let body_str = String::from_utf8_lossy(&body);
+        debug!("Versioning configuration body: {}", body_str);
+
+        // Extract status from XML body
+        let status = if body_str.contains("<Status>Enabled</Status>") {
+            Some("Enabled".to_string())
+        } else if body_str.contains("<Status>Suspended</Status>") {
+            Some("Suspended".to_string())
+        } else {
+            None
+        };
+
+        // Update bucket versioning status
+        let mut buckets = state.buckets.lock().unwrap();
+        if let Some(bucket_data) = buckets.get_mut(&bucket) {
+            bucket_data.versioning_status = status.clone();
+            info!("Set versioning status for bucket {} to {:?}", bucket, status);
+
+            // Persist versioning status to disk
+            let versioning_file = state.storage_path.join(&bucket).join(".versioning");
+            if let Some(ref status) = status {
+                if let Err(e) = fs::write(&versioning_file, status.as_bytes()) {
+                    warn!("Failed to persist versioning status: {}", e);
+                }
+            }
+        } else {
+            return Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .body(Body::from("NoSuchBucket"))
+                .unwrap();
+        }
+
         return Response::builder()
             .status(StatusCode::OK)
             .body(Body::empty())
@@ -861,6 +1035,8 @@ async fn handle_object_post(
             let bucket_data = buckets.entry(bucket.clone()).or_insert_with(|| BucketData {
                 created: Utc::now(),
                 objects: HashMap::new(),
+                versioning_status: None,
+                versions: HashMap::new(),
             });
 
             bucket_data.objects.insert(key.clone(), ObjectData {
@@ -989,6 +1165,8 @@ async fn create_bucket(
         BucketData {
             created: Utc::now(),
             objects: HashMap::new(),
+            versioning_status: None,
+            versions: HashMap::new(),
         },
     );
 
@@ -1183,6 +1361,68 @@ async fn put_object(
             .unwrap();
     }
 
+    // Check if versioning is enabled for this bucket
+    let version_id = {
+        let mut buckets = state.buckets.lock().unwrap();
+        let bucket_data = buckets
+            .entry(bucket.clone())
+            .or_insert_with(|| BucketData {
+                created: Utc::now(),
+                objects: HashMap::new(),
+                versioning_status: None,
+                versions: HashMap::new(),
+            });
+
+        // Load versioning status from disk if not in memory
+        if bucket_data.versioning_status.is_none() {
+            let versioning_file = state.storage_path.join(&bucket).join(".versioning");
+            if versioning_file.exists() {
+                bucket_data.versioning_status = fs::read_to_string(&versioning_file).ok();
+            }
+        }
+
+        let versioning_enabled = bucket_data.versioning_status.as_ref()
+            .map(|s| s == "Enabled")
+            .unwrap_or(false);
+
+        if versioning_enabled {
+            let vid = uuid::Uuid::new_v4().to_string();
+
+            // Save versioned object to disk
+            let versions_dir = bucket_path.join(".versions").join(&key);
+            if let Err(e) = fs::create_dir_all(&versions_dir) {
+                warn!("Failed to create versions directory: {}", e);
+            }
+
+            let version_path = versions_dir.join(&vid);
+            if let Err(e) = fs::write(&version_path, &data) {
+                warn!("Failed to write versioned object: {}", e);
+            }
+
+            // Mark all existing versions as not latest
+            let versions = bucket_data.versions.entry(key.clone()).or_insert_with(Vec::new);
+            for v in versions.iter_mut() {
+                v.is_latest = false;
+            }
+
+            // Add new version
+            versions.push(ObjectVersion {
+                version_id: vid.clone(),
+                data: data.clone(),
+                etag: etag.clone(),
+                last_modified: Utc::now(),
+                size: data.len(),
+                is_latest: true,
+                is_delete_marker: false,
+            });
+
+            info!("Created version {} for object {}/{}", vid, bucket, key);
+            Some(vid)
+        } else {
+            None
+        }
+    };
+
     // Save metadata to a separate file
     let metadata_path = object_path.with_extension("metadata");
     let content_type = headers
@@ -1199,7 +1439,7 @@ async fn put_object(
         content_type,
         storage_class: "STANDARD".to_string(),
         metadata: HashMap::new(),
-        version_id: None,
+        version_id: version_id.clone(),
     };
 
     if let Ok(metadata_json) = serde_json::to_string(&metadata) {
@@ -1221,6 +1461,8 @@ async fn put_object(
                 BucketData {
                     created: Utc::now(),
                     objects: HashMap::new(),
+                    versioning_status: None,
+                    versions: HashMap::new(),
                 },
             );
             buckets.get_mut(&bucket).unwrap()
@@ -1239,11 +1481,16 @@ async fn put_object(
 
     info!("Object stored at: {:?}", object_path);
 
-    Response::builder()
+    let mut response = Response::builder()
         .status(StatusCode::OK)
-        .header(header::ETAG, format!("\"{}\"", etag))
-        .body(Body::empty())
-        .unwrap()
+        .header(header::ETAG, format!("\"{}\"", etag));
+
+    // Add version ID header if versioning is enabled
+    if let Some(ref vid) = version_id {
+        response = response.header("x-amz-version-id", vid);
+    }
+
+    response.body(Body::empty()).unwrap()
 }
 
 async fn get_object(

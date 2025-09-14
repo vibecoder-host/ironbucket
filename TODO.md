@@ -31,13 +31,24 @@ This document tracks all pending tasks, improvements, and features to be impleme
   - ✅ Return DeleteResult XML with successes and errors
   - ✅ Handle non-existent objects with proper error codes
   - ✅ Delete both object files and metadata files
-- ⬜ **Form-based uploads** (`src/main.rs:228`)
+
 
 ### Versioning
-- ⬜ **Set versioning status** (`src/versioning.rs:18`)
-- ⬜ **Get versioning status** (`src/versioning.rs:23`)
-- ⬜ **List object versions** (`src/versioning.rs:37`)
-- 🟨 **Version ID support in metadata** (structure exists, not implemented)
+- ✅ **Set versioning status** (`src/main.rs:368-405`) - Completed 2025-09-14
+  - ✅ Parse versioning configuration XML
+  - ✅ Store versioning status in memory and on disk
+  - ✅ Support Enabled/Suspended states
+- ✅ **Get versioning status** (`src/main.rs:289-319`) - Completed 2025-09-14
+  - ✅ Return versioning configuration XML
+  - ✅ Load from memory or disk
+- ✅ **List object versions** (`src/main.rs:377-481`) - Completed 2025-09-14
+  - ✅ List all versions of objects
+  - ✅ Support delete markers
+  - ✅ Mark latest versions
+- ✅ **Version ID support in metadata** (`src/main.rs:1365-1442`) - Completed 2025-09-14
+  - ✅ Generate unique version IDs
+  - ✅ Store versioned objects separately
+  - ✅ Return version ID in response headers
 
 ---
 
@@ -86,6 +97,13 @@ This document tracks all pending tasks, improvements, and features to be impleme
 - ⬜ **Replicate to peer nodes** (`src/cluster.rs:31`)
 - ⬜ **Notify peer nodes on bucket operations** (`src/cluster.rs:36`)
 - ⬜ **Check cluster health** (`src/cluster.rs:41`)
+
+---
+
+## Optional
+
+- ⬜ **Form-based uploads** (`src/main.rs:228`)
+
 
 ---
 
@@ -172,7 +190,7 @@ This document tracks all pending tasks, improvements, and features to be impleme
 - ✅ Metadata persistence
 - ✅ Multipart upload workflow (8 comprehensive tests)
 - ✅ Batch delete operations (7 comprehensive tests)
-- ⬜ Versioning workflow
+- ✅ Versioning workflow (12 comprehensive tests)
 - ⬜ ACL/Policy enforcement
 
 ### Performance Tests
@@ -224,5 +242,5 @@ This document tracks all pending tasks, improvements, and features to be impleme
 ---
 
 *Last Updated: 2025-09-14*
-*Total Tasks: 51 (Completed: 25, Pending: 26)*
-*Recent Progress: Batch Delete operations fully implemented and tested*
+*Total Tasks: 51 (Completed: 35, Pending: 16)*
+*Recent Progress: Object Versioning fully implemented and tested*

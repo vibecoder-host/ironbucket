@@ -58,6 +58,8 @@ run_test_suite() {
 run_test_suite "Basic S3 Operations" "./test-s3-operations.sh"
 run_test_suite "Metadata Persistence" "./test-metadata-persistence.sh"
 run_test_suite "Multipart Upload" "./test-multipart-upload.sh"
+run_test_suite "Batch Delete Operations" "./test-batch-delete.sh"
+run_test_suite "Object Versioning" "./test-versioning.sh"
 
 # Performance tests are optional (they take longer)
 if [ "${RUN_PERFORMANCE_TESTS:-false}" = "true" ]; then
