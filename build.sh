@@ -1,19 +1,19 @@
 #!/bin/bash
 
-# Build and run RustyBucket using Docker
+# Build and run IronBucket using Docker
 
-echo "Building RustyBucket..."
+echo "Building IronBucket..."
 
 # Create necessary directories
 mkdir -p s3 data redis-data
 
 # Build the Docker image
-docker build -t rustybucket:latest .
+docker build -t ironbucket:latest .
 
 if [ $? -eq 0 ]; then
     echo "Build successful!"
     echo ""
-    echo "To run RustyBucket:"
+    echo "To run IronBucket:"
     echo "  docker-compose up -d"
     echo ""
     echo "To test the server:"

@@ -1,4 +1,4 @@
-# RustyBucket
+# IronBucket
 
 High-performance S3-compatible storage server written in Rust, optimized for speed and reliability.
 
@@ -36,16 +36,16 @@ Benchmarked with MinIO warp on standard hardware (8 cores / 16GB ram):
 
 ```bash
 # Clone the repository
-cd /opt/app/rustybucket
+cd /opt/app/ironbucket
 
-# Start RustyBucket with Docker Compose
+# Start IronBucket with Docker Compose
 docker-compose up -d
 
 # Verify it's running
 docker-compose ps
 
 # Check logs
-docker-compose logs -f rustybucket
+docker-compose logs -f ironbucket
 ```
 
 ### Using Cargo
@@ -55,7 +55,7 @@ docker-compose logs -f rustybucket
 cargo build --release
 
 # Run with environment variables
-STORAGE_PATH=/s3 ./target/release/rustybucket
+STORAGE_PATH=/s3 ./target/release/ironbucket
 ```
 
 ## Configuration
@@ -69,24 +69,21 @@ MAX_FILE_SIZE=5368709120            # Max file size (5GB default)
 
 # Server
 PORT=9000                           # Server port
-RUST_LOG=rustybucket=info          # Logging level
+RUST_LOG=ironbucket=info          # Logging level
 
 # Authentication (S3 compatible)
-ACCESS_KEY=minioadmin
-SECRET_KEY=29d5bf40-b394-4923-bbf4-b1467964911d
+ACCESS_KEY=root
+SECRET_KEY=xxxxxxxxxxxxxxxxxxxxx
 
 # Optional: Redis Cache
 REDIS_URL=redis://172.17.0.1:16380
-
-# Optional: Database
-DATABASE_URL=sqlite:///app/data/rustybucket.db
 ```
 
 ## Docker Compose Configuration
 
 ```yaml
 services:
-  rustybucket:
+  ironbucket:
     build: .
     ports:
       - "172.17.0.1:20000:9000"
@@ -94,7 +91,8 @@ services:
       - ./s3:/s3
     environment:
       - STORAGE_PATH=/s3
-      - RUST_LOG=rustybucket=info,tower_http=info
+      - RUST_LOG=ironbucket=info,tower_http=info
+      - REDIS_URL=redis://172.17.0.1:16380
     restart: always
 
   redis:
@@ -147,9 +145,9 @@ services:
 
 ```bash
 # Configure credentials
-export AWS_ACCESS_KEY_ID=minioadmin
-export AWS_SECRET_ACCESS_KEY=29d5bf40-b394-4923-bbf4-b1467964911d
-export AWS_ENDPOINT=http://localhost:20000
+export AWS_ACCESS_KEY_ID=root
+export AWS_SECRET_ACCESS_KEY=xxxxxxxxxxxxxxxxxxxxx
+export AWS_ENDPOINT=http://172.17.0.1:20000
 
 # Create a bucket
 aws --endpoint-url $AWS_ENDPOINT s3 mb s3://my-bucket
@@ -182,8 +180,8 @@ tar -xzf warp_0.7.11_Linux_x86_64.tar.gz
 # Run mixed benchmark
 ./warp mixed \
   --host=localhost:20000 \
-  --access-key=minioadmin \
-  --secret-key=29d5bf40-b394-4923-bbf4-b1467964911d \
+  --access-key=root \
+  --secret-key=xxxxxxxxxxxxxxxxxxxxx \
   --autoterm \
   --duration=60s \
   --concurrent=50
@@ -198,7 +196,7 @@ tar -xzf warp_0.7.11_Linux_x86_64.tar.gz
 
 ```
 ┌──────────────┐     ┌──────────────────┐     ┌─────────────┐
-│   S3 Client  │────▶│   RustyBucket    │────▶│ File System │
+│   S3 Client  │────▶│   IronBucket    │────▶│ File System │
 └──────────────┘     │                  │     └─────────────┘
                      │  - Axum Router    │
                      │  - Auth Middleware│     ┌─────────────┐
@@ -219,26 +217,26 @@ tar -xzf warp_0.7.11_Linux_x86_64.tar.gz
 
 ```bash
 # Check storage usage
-du -sh /opt/app/rustybucket/s3/
+du -sh /opt/app/ironbucket/s3/
 
 # Clean up all storage
-rm -rf /opt/app/rustybucket/s3/*
+rm -rf /opt/app/ironbucket/s3/*
 
 # Clean Redis cache
-docker exec rustybucket-redis redis-cli FLUSHALL
+docker exec ironbucket-redis redis-cli FLUSHALL
 ```
 
 ## Monitoring
 
 ```bash
 # View logs
-docker-compose logs -f rustybucket
+docker-compose logs -f ironbucket
 
 # Check container status
 docker-compose ps
 
 # Monitor performance
-docker stats rustybucket
+docker stats ironbucket
 ```
 
 ## Development
@@ -264,14 +262,14 @@ cargo clippy
 # Check what's using port 20000
 netstat -tlnp | grep 20000
 
-# Stop RustyBucket
+# Stop IronBucket
 docker-compose down
 ```
 
 ### Storage Permission Issues
 ```bash
 # Fix permissions
-sudo chown -R $USER:$USER /opt/app/rustybucket/s3
+sudo chown -R $USER:$USER /opt/app/ironbucket/s3
 ```
 
 ### Clear All Data
@@ -308,4 +306,4 @@ Contributions are welcome! Please ensure:
 
 ## License
 
-Apache 2.0
+This project is licensed under the GNU Affero General Public License v3.0 (AGPL-3.0) - see the LICENSE file for details.

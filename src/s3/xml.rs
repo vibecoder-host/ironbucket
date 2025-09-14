@@ -5,8 +5,8 @@ pub fn list_buckets_response(buckets: &[BucketInfo]) -> String {
     let mut xml = String::from(r#"<?xml version="1.0" encoding="UTF-8"?>"#);
     xml.push_str("\n<ListAllMyBucketsResult>");
     xml.push_str("\n  <Owner>");
-    xml.push_str("\n    <ID>rustybucket</ID>");
-    xml.push_str("\n    <DisplayName>RustyBucket User</DisplayName>");
+    xml.push_str("\n    <ID>ironbucket</ID>");
+    xml.push_str("\n    <DisplayName>IronBucket User</DisplayName>");
     xml.push_str("\n  </Owner>");
     xml.push_str("\n  <Buckets>");
 
@@ -117,8 +117,8 @@ fn list_objects_v1_response(
         xml.push_str(&format!("\n    <Size>{}</Size>", object.size));
         xml.push_str(&format!("\n    <StorageClass>{}</StorageClass>", object.storage_class));
         xml.push_str("\n    <Owner>");
-        xml.push_str("\n      <ID>rustybucket</ID>");
-        xml.push_str("\n      <DisplayName>RustyBucket User</DisplayName>");
+        xml.push_str("\n      <ID>ironbucket</ID>");
+        xml.push_str("\n      <DisplayName>IronBucket User</DisplayName>");
         xml.push_str("\n    </Owner>");
         xml.push_str("\n  </Contents>");
     }

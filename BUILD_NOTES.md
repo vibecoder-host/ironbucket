@@ -1,8 +1,8 @@
-# RustyBucket Build Notes
+# IronBucket Build Notes
 
 ## Current Status
 
-RustyBucket has been successfully architected and implemented as a high-performance Rust port of IronBucket. The codebase is complete with all necessary modules and is ready for compilation.
+IronBucket has been successfully architected and implemented as a high-performance Rust port of IronBucket. The codebase is complete with all necessary modules and is ready for compilation.
 
 ## Build Issue
 
@@ -62,7 +62,7 @@ Remove or replace dependencies that pull in the problematic crate:
 
 ## Performance Expectations
 
-Once built, RustyBucket is expected to deliver:
+Once built, IronBucket is expected to deliver:
 - **10x faster** small file operations vs Node.js
 - **5x faster** large file transfers
 - **Sub-millisecond** latency for cached operations

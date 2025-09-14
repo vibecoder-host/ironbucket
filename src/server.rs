@@ -58,7 +58,7 @@ pub async fn run(config: Config) -> Result<()> {
     // Create socket address
     let addr = SocketAddr::from(([0, 0, 0, 0], config.server.port));
 
-    info!("RustyBucket listening on {}", addr);
+    info!("IronBucket listening on {}", addr);
 
     // Create the server
     let listener = tokio::net::TcpListener::bind(addr).await?;

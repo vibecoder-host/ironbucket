@@ -51,8 +51,8 @@ impl AclManager {
         // TODO: Retrieve ACL
         Ok(AccessControlList {
             owner: Owner {
-                id: "rustybucket".to_string(),
-                display_name: "RustyBucket User".to_string(),
+                id: "ironbucket".to_string(),
+                display_name: "IronBucket User".to_string(),
             },
             grants: vec![],
         })

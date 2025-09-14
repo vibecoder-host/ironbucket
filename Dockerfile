@@ -25,8 +25,8 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-COPY --from=builder /app/target/release/rustybucket /app/rustybucket
+COPY --from=builder /app/target/release/ironbucket /app/ironbucket
 
 EXPOSE 9000
 
-CMD ["/app/rustybucket"]
+CMD ["/app/ironbucket"]

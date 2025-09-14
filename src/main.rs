@@ -141,12 +141,12 @@ async fn main() {
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "rustybucket=debug,tower_http=info".into()),
+                .unwrap_or_else(|_| "ironbucket=debug,tower_http=info".into()),
         )
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    info!("Starting RustyBucket S3-compatible server with full API support...");
+    info!("Starting IronBucket S3-compatible server with full API support...");
 
     // Get storage path from environment variable or use default
     let storage_path = std::env::var("STORAGE_PATH")
@@ -195,7 +195,7 @@ async fn main() {
         .with_state(state);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], 9000));
-    info!("RustyBucket listening on {} with full S3 API support", addr);
+    info!("IronBucket listening on {} with full S3 API support", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
@@ -278,14 +278,14 @@ async fn handle_bucket_get(
         let acl_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
 <AccessControlPolicy>
     <Owner>
-        <ID>rustybucket</ID>
-        <DisplayName>RustyBucket</DisplayName>
+        <ID>ironbucket</ID>
+        <DisplayName>IronBucket</DisplayName>
     </Owner>
     <AccessControlList>
         <Grant>
             <Grantee xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="CanonicalUser">
-                <ID>rustybucket</ID>
-                <DisplayName>RustyBucket</DisplayName>
+                <ID>ironbucket</ID>
+                <DisplayName>IronBucket</DisplayName>
             </Grantee>
             <Permission>FULL_CONTROL</Permission>
         </Grant>
@@ -452,14 +452,14 @@ async fn handle_object_get(
         let acl_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
 <AccessControlPolicy>
     <Owner>
-        <ID>rustybucket</ID>
-        <DisplayName>RustyBucket</DisplayName>
+        <ID>ironbucket</ID>
+        <DisplayName>IronBucket</DisplayName>
     </Owner>
     <AccessControlList>
         <Grant>
             <Grantee xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="CanonicalUser">
-                <ID>rustybucket</ID>
-                <DisplayName>RustyBucket</DisplayName>
+                <ID>ironbucket</ID>
+                <DisplayName>IronBucket</DisplayName>
             </Grantee>
             <Permission>FULL_CONTROL</Permission>
         </Grant>
@@ -704,8 +704,8 @@ async fn list_buckets(State(state): State<AppState>) -> impl IntoResponse {
     let mut xml = String::from(r#"<?xml version="1.0" encoding="UTF-8"?>
 <ListAllMyBucketsResult>
     <Owner>
-        <ID>rustybucket</ID>
-        <DisplayName>RustyBucket</DisplayName>
+        <ID>ironbucket</ID>
+        <DisplayName>IronBucket</DisplayName>
     </Owner>
     <Buckets>"#);
 
@@ -743,8 +743,8 @@ async fn create_bucket(
         return Response::builder()
             .status(StatusCode::OK)
             .header(header::CONTENT_LENGTH, "0")
-            .header("x-amz-request-id", "rustybucket-request-id")
-            .header("x-amz-id-2", "rustybucket-id-2")
+            .header("x-amz-request-id", "ironbucket-request-id")
+            .header("x-amz-id-2", "ironbucket-id-2")
             .body(Body::empty())
             .unwrap();
     }
@@ -760,8 +760,8 @@ async fn create_bucket(
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_LENGTH, "0")
-        .header("x-amz-request-id", "rustybucket-request-id")
-        .header("x-amz-id-2", "rustybucket-id-2")
+        .header("x-amz-request-id", "ironbucket-request-id")
+        .header("x-amz-id-2", "ironbucket-id-2")
         .body(Body::empty())
         .unwrap()
 }

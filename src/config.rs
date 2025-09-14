@@ -121,7 +121,7 @@ impl Config {
             },
             database: DatabaseConfig {
                 url: env::var("DATABASE_URL").unwrap_or_else(|_| {
-                    "sqlite:///opt/app/rustybucket/data/rustybucket.db".to_string()
+                    "sqlite:///opt/app/ironbucket/data/ironbucket.db".to_string()
                 }),
                 max_connections: env::var("DB_MAX_CONNECTIONS")
                     .unwrap_or_else(|_| "10".to_string())
