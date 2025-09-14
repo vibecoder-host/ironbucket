@@ -13,20 +13,6 @@ services:
     environment:
       - RUST_LOG=ironbucket=info,tower_http=info
       - STORAGE_PATH=/s3
-      - REDIS_URL=redis://172.17.0.1:16380
-    restart: always
-    networks:
-      - ironbucket-network
-
-  # Optional: Redis for caching
-  redis:
-    image: redis:7-alpine
-    #container_name: ironbucket-redis
-    ports:
-      - "172.17.0.1:16380:6379"
-    volumes:
-      - ./redis-data:/data
-    command: redis-server --appendonly yes
     restart: always
     networks:
       - ironbucket-network

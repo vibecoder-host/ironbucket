@@ -69,9 +69,6 @@ pub enum Error {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
-    #[error("Redis error: {0}")]
-    Redis(#[from] redis::RedisError),
-
     #[error("Serialization error: {0}")]
     Serialization(String),
 
@@ -108,7 +105,6 @@ impl Error {
             Error::NotImplemented => StatusCode::NOT_IMPLEMENTED,
             Error::ServiceUnavailable => StatusCode::SERVICE_UNAVAILABLE,
             Error::Io(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            Error::Redis(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Error::Serialization(_) => StatusCode::BAD_REQUEST,
             Error::Other(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }

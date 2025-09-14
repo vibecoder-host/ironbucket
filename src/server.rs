@@ -1,5 +1,4 @@
 use crate::{
-    cache::CacheManager,
     cluster::ClusterManager,
     config::Config,
     error::Result,
@@ -15,7 +14,6 @@ use tracing::info;
 pub struct AppState {
     pub config: Config,
     pub storage: Arc<dyn StorageBackend>,
-    pub cache: Arc<CacheManager>,
     pub multipart: Arc<MultipartManager>,
     pub cluster: Option<Arc<ClusterManager>>,
 }
@@ -23,9 +21,6 @@ pub struct AppState {
 pub async fn run(config: Config) -> Result<()> {
     // Initialize storage backend
     let storage = Arc::new(crate::storage::FileSystemBackend::new(&config.storage)?);
-
-    // Initialize cache manager
-    let cache = Arc::new(CacheManager::new(&config).await?);
 
     // Initialize multipart manager
     let multipart = Arc::new(MultipartManager::new(&config, storage.clone()).await?);
@@ -41,7 +36,6 @@ pub async fn run(config: Config) -> Result<()> {
     let state = Arc::new(AppState {
         config: config.clone(),
         storage,
-        cache,
         multipart,
         cluster,
     });

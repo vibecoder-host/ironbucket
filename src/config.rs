@@ -8,7 +8,6 @@ pub struct Config {
     pub server: ServerConfig,
     pub storage: StorageConfig,
     pub auth: AuthConfig,
-    pub redis: RedisConfig,
     pub cluster: ClusterConfig,
     pub performance: PerformanceConfig,
 }
@@ -36,13 +35,6 @@ pub struct AuthConfig {
     pub secret_access_key: String,
     pub region: String,
     pub signature_version: String,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct RedisConfig {
-    pub url: String,
-    pub pool_size: usize,
-    pub timeout_secs: u64,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -100,16 +92,6 @@ impl Config {
                 region: env::var("REGION").unwrap_or_else(|_| "us-east-1".to_string()),
                 signature_version: env::var("SIGNATURE_VERSION")
                     .unwrap_or_else(|_| "v4".to_string()),
-            },
-            redis: RedisConfig {
-                url: env::var("REDIS_URL")
-                    .unwrap_or_else(|_| "redis://172.17.0.1:16379".to_string()),
-                pool_size: env::var("REDIS_POOL_SIZE")
-                    .unwrap_or_else(|_| "10".to_string())
-                    .parse()?,
-                timeout_secs: env::var("REDIS_TIMEOUT_SECS")
-                    .unwrap_or_else(|_| "5".to_string())
-                    .parse()?,
             },
             cluster: ClusterConfig {
                 enabled: env::var("CLUSTER_ENABLED")
