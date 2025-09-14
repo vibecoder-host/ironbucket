@@ -54,17 +54,21 @@ This document tracks all pending tasks, improvements, and features to be impleme
 
 ## Security & Access Control
 
-### ACL (Access Control Lists)
-- ⬜ **Store ACL** (`src/acl.rs:46`)
-- ⬜ **Retrieve ACL** (`src/acl.rs:51`)
-- ⬜ **Check user permissions** (`src/acl.rs:68`)
-- 🟨 **Set object/bucket ACL** (endpoints exist, not persisted)
-
 ### Bucket Policies
-- ⬜ **Store bucket policy** (`src/policy.rs:41`)
-- ⬜ **Retrieve bucket policy** (`src/policy.rs:46`)
-- ⬜ **Delete bucket policy** (`src/policy.rs:51`)
-- ⬜ **Check principal permissions** (`src/policy.rs:62`)
+- ✅ **Store bucket policy** (`src/main.rs:577-618`) - Completed 2025-09-14
+  - ✅ Parse and validate JSON policy
+  - ✅ Store policy in memory and on disk
+  - ✅ Return proper error for malformed policies
+- ✅ **Retrieve bucket policy** (`src/main.rs:350-385`) - Completed 2025-09-14
+  - ✅ Return policy from memory or disk
+  - ✅ Handle NoSuchBucketPolicy error
+- ✅ **Delete bucket policy** (`src/main.rs:1276-1314`) - Completed 2025-09-14
+  - ✅ Remove policy from memory and disk
+  - ✅ Return proper error if no policy exists
+- ✅ **Check principal permissions** (`src/main.rs:108-196`) - Completed 2025-09-14
+  - ✅ Parse policy statements
+  - ✅ Match principal, action, and resource
+  - ✅ Support Allow/Deny effects
 
 ### Encryption
 - ⬜ **Implement encryption** (`src/encryption.rs:22`)
@@ -76,6 +80,12 @@ This document tracks all pending tasks, improvements, and features to be impleme
 - ⬜ **Store CORS configuration** (`src/cors.rs:26`)
 - ⬜ **Retrieve CORS configuration** (`src/cors.rs:31`)
 - ⬜ **Delete CORS configuration** (`src/cors.rs:36`)
+
+### ACL (Access Control Lists)
+- ⬜ **Store ACL** (`src/acl.rs:46`)
+- ⬜ **Retrieve ACL** (`src/acl.rs:51`)
+- ⬜ **Check user permissions** (`src/acl.rs:68`)
+- 🟨 **Set object/bucket ACL** (endpoints exist, not persisted)
 
 ---
 
@@ -191,7 +201,8 @@ This document tracks all pending tasks, improvements, and features to be impleme
 - ✅ Multipart upload workflow (8 comprehensive tests)
 - ✅ Batch delete operations (7 comprehensive tests)
 - ✅ Versioning workflow (12 comprehensive tests)
-- ⬜ ACL/Policy enforcement
+- ✅ Bucket policies (13 comprehensive tests)
+- ⬜ ACL enforcement
 
 ### Performance Tests
 - ✅ Basic benchmark with warp
@@ -242,5 +253,5 @@ This document tracks all pending tasks, improvements, and features to be impleme
 ---
 
 *Last Updated: 2025-09-14*
-*Total Tasks: 51 (Completed: 35, Pending: 16)*
-*Recent Progress: Object Versioning fully implemented and tested*
+*Total Tasks: 51 (Completed: 39, Pending: 12)*
+*Recent Progress: Bucket Policies fully implemented and tested*

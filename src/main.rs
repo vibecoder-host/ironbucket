@@ -104,12 +104,104 @@ fn find_sequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         .position(|window| window == needle)
 }
 
+// Check if an action is allowed based on bucket policy
+fn check_policy_permission(
+    policy_json: &str,
+    action: &str,
+    resource: &str,
+    principal: &str,
+) -> bool {
+    // Parse the policy
+    if let Ok(policy) = serde_json::from_str::<serde_json::Value>(policy_json) {
+        if let Some(statements) = policy.get("Statement").and_then(|s| s.as_array()) {
+            for statement in statements {
+                // Check Effect
+                let effect = statement.get("Effect")
+                    .and_then(|e| e.as_str())
+                    .unwrap_or("");
+
+                // Check Principal
+                let principal_match = if let Some(p) = statement.get("Principal") {
+                    if p.as_str() == Some("*") || p == "*" {
+                        true
+                    } else if let Some(aws) = p.get("AWS") {
+                        if let Some(arr) = aws.as_array() {
+                            arr.iter().any(|v| v.as_str() == Some(principal))
+                        } else {
+                            aws.as_str() == Some(principal)
+                        }
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+
+                // Check Action
+                let action_match = if let Some(actions) = statement.get("Action") {
+                    if let Some(arr) = actions.as_array() {
+                        arr.iter().any(|a| {
+                            if let Some(act) = a.as_str() {
+                                act == action || act == "s3:*" ||
+                                (act.ends_with("*") && action.starts_with(&act[..act.len()-1]))
+                            } else {
+                                false
+                            }
+                        })
+                    } else if let Some(act) = actions.as_str() {
+                        act == action || act == "s3:*" ||
+                        (act.ends_with("*") && action.starts_with(&act[..act.len()-1]))
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+
+                // Check Resource
+                let resource_match = if let Some(resources) = statement.get("Resource") {
+                    if let Some(arr) = resources.as_array() {
+                        arr.iter().any(|r| {
+                            if let Some(res) = r.as_str() {
+                                res == resource || res == "*" ||
+                                (res.ends_with("*") && resource.starts_with(&res[..res.len()-1]))
+                            } else {
+                                false
+                            }
+                        })
+                    } else if let Some(res) = resources.as_str() {
+                        res == resource || res == "*" ||
+                        (res.ends_with("*") && resource.starts_with(&res[..res.len()-1]))
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+
+                // If all conditions match
+                if principal_match && action_match && resource_match {
+                    if effect == "Allow" {
+                        return true;
+                    } else if effect == "Deny" {
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+
+    // Default deny if no matching statement
+    false
+}
+
 #[derive(Clone)]
 struct BucketData {
     created: chrono::DateTime<Utc>,
     objects: HashMap<String, ObjectData>,
     versioning_status: Option<String>, // "Enabled", "Suspended", or None
     versions: HashMap<String, Vec<ObjectVersion>>, // key -> list of versions
+    policy: Option<String>, // JSON policy document
 }
 
 #[derive(Clone)]
@@ -249,6 +341,7 @@ struct BucketQueryParams {
     versioning: Option<String>,
     versions: Option<String>,
     acl: Option<String>,
+    policy: Option<String>,
     uploads: Option<String>,
     delete: Option<String>,
     #[serde(rename = "max-keys")]
@@ -342,6 +435,44 @@ async fn handle_bucket_get(
             .status(StatusCode::OK)
             .header(header::CONTENT_TYPE, "application/xml")
             .body(Body::from(acl_xml))
+            .unwrap();
+    }
+
+    if params.policy.is_some() {
+        // Return bucket policy
+        let buckets = state.buckets.lock().unwrap();
+
+        if let Some(bucket_data) = buckets.get(&bucket) {
+            if let Some(ref policy) = bucket_data.policy {
+                return Response::builder()
+                    .status(StatusCode::OK)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(policy.clone()))
+                    .unwrap();
+            } else {
+                // Try to load from disk if not in memory
+                let policy_file = state.storage_path.join(&bucket).join(".policy");
+                if policy_file.exists() {
+                    if let Ok(policy) = fs::read_to_string(&policy_file) {
+                        return Response::builder()
+                            .status(StatusCode::OK)
+                            .header(header::CONTENT_TYPE, "application/json")
+                            .body(Body::from(policy))
+                            .unwrap();
+                    }
+                }
+            }
+        }
+
+        // No policy found
+        return Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .header(header::CONTENT_TYPE, "application/xml")
+            .body(Body::from(r#"<?xml version="1.0" encoding="UTF-8"?>
+<Error>
+    <Code>NoSuchBucketPolicy</Code>
+    <Message>The bucket policy does not exist</Message>
+</Error>"#))
             .unwrap();
     }
 
@@ -520,6 +651,50 @@ async fn handle_bucket_put(
                 if let Err(e) = fs::write(&versioning_file, status.as_bytes()) {
                     warn!("Failed to persist versioning status: {}", e);
                 }
+            }
+        } else {
+            return Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .body(Body::from("NoSuchBucket"))
+                .unwrap();
+        }
+
+        return Response::builder()
+            .status(StatusCode::OK)
+            .body(Body::empty())
+            .unwrap();
+    }
+
+    if params.policy.is_some() {
+        // Set bucket policy
+        let policy_str = String::from_utf8_lossy(&body);
+        debug!("Setting bucket policy: {}", policy_str);
+
+        // Basic JSON validation
+        if serde_json::from_str::<serde_json::Value>(&policy_str).is_err() {
+            return Response::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .header(header::CONTENT_TYPE, "application/xml")
+                .body(Body::from(r#"<?xml version="1.0" encoding="UTF-8"?>
+<Error>
+    <Code>MalformedPolicy</Code>
+    <Message>The policy is not in the valid JSON format</Message>
+</Error>"#))
+                .unwrap();
+        }
+
+        // Update bucket policy
+        let mut buckets = state.buckets.lock().unwrap();
+        if let Some(bucket_data) = buckets.get_mut(&bucket) {
+            bucket_data.policy = Some(policy_str.to_string());
+            info!("Set policy for bucket {}", bucket);
+
+            // Persist policy to disk
+            let policy_file = state.storage_path.join(&bucket).join(".policy");
+            if let Err(e) = fs::write(&policy_file, policy_str.as_bytes()) {
+                warn!("Failed to persist bucket policy: {}", e);
+            } else {
+                debug!("Policy persisted to: {:?}", policy_file);
             }
         } else {
             return Response::builder()
@@ -1037,6 +1212,7 @@ async fn handle_object_post(
                 objects: HashMap::new(),
                 versioning_status: None,
                 versions: HashMap::new(),
+                policy: None,
             });
 
             bucket_data.objects.insert(key.clone(), ObjectData {
@@ -1167,6 +1343,7 @@ async fn create_bucket(
             objects: HashMap::new(),
             versioning_status: None,
             versions: HashMap::new(),
+            policy: None,
         },
     );
 
@@ -1182,14 +1359,64 @@ async fn create_bucket(
 async fn delete_bucket(
     State(state): State<AppState>,
     Path(bucket): Path<String>,
+    Query(params): Query<BucketQueryParams>,
 ) -> impl IntoResponse {
-    info!("Deleting bucket: {}", bucket);
+    info!("Deleting bucket: {} with params: {:?}", bucket, params);
 
+    // Handle policy deletion
+    if params.policy.is_some() {
+        let mut buckets = state.buckets.lock().unwrap();
+        if let Some(bucket_data) = buckets.get_mut(&bucket) {
+            if bucket_data.policy.is_some() {
+                bucket_data.policy = None;
+                info!("Deleted policy for bucket {}", bucket);
+
+                // Remove policy file from disk
+                let policy_file = state.storage_path.join(&bucket).join(".policy");
+                if policy_file.exists() {
+                    if let Err(e) = fs::remove_file(&policy_file) {
+                        warn!("Failed to delete policy file: {}", e);
+                    } else {
+                        debug!("Policy file deleted: {:?}", policy_file);
+                    }
+                }
+
+                return Response::builder()
+                    .status(StatusCode::NO_CONTENT)
+                    .body(Body::empty())
+                    .unwrap();
+            } else {
+                // No policy to delete
+                return Response::builder()
+                    .status(StatusCode::NOT_FOUND)
+                    .header(header::CONTENT_TYPE, "application/xml")
+                    .body(Body::from(r#"<?xml version="1.0" encoding="UTF-8"?>
+<Error>
+    <Code>NoSuchBucketPolicy</Code>
+    <Message>The bucket policy does not exist</Message>
+</Error>"#))
+                    .unwrap();
+            }
+        } else {
+            return Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .body(Body::from("NoSuchBucket"))
+                .unwrap();
+        }
+    }
+
+    // Default: delete the bucket itself
     let mut buckets = state.buckets.lock().unwrap();
     if buckets.remove(&bucket).is_some() {
-        StatusCode::NO_CONTENT
+        Response::builder()
+            .status(StatusCode::NO_CONTENT)
+            .body(Body::empty())
+            .unwrap()
     } else {
-        StatusCode::NOT_FOUND
+        Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .body(Body::empty())
+            .unwrap()
     }
 }
 
@@ -1371,6 +1598,7 @@ async fn put_object(
                 objects: HashMap::new(),
                 versioning_status: None,
                 versions: HashMap::new(),
+                policy: None,
             });
 
         // Load versioning status from disk if not in memory
@@ -1463,6 +1691,7 @@ async fn put_object(
                     objects: HashMap::new(),
                     versioning_status: None,
                     versions: HashMap::new(),
+                    policy: None,
                 },
             );
             buckets.get_mut(&bucket).unwrap()
