@@ -9,7 +9,8 @@ use axum::{
 };
 use bytes::Bytes;
 use chrono::{Utc, DateTime};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use serde_json;
 use std::{
     collections::HashMap,
     fs,
@@ -115,6 +116,18 @@ struct ObjectData {
     etag: String,
     last_modified: chrono::DateTime<Utc>,
     size: usize,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct ObjectMetadata {
+    key: String,
+    size: u64,
+    etag: String,
+    last_modified: DateTime<Utc>,
+    content_type: String,
+    storage_class: String,
+    metadata: HashMap<String, String>,
+    version_id: Option<String>,
 }
 
 #[derive(Clone)]
@@ -948,6 +961,33 @@ async fn put_object(
             .unwrap();
     }
 
+    // Save metadata to a separate file
+    let metadata_path = object_path.with_extension("metadata");
+    let content_type = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("application/octet-stream")
+        .to_string();
+
+    let metadata = ObjectMetadata {
+        key: key.clone(),
+        size: data.len() as u64,
+        etag: etag.clone(),
+        last_modified: Utc::now(),
+        content_type,
+        storage_class: "STANDARD".to_string(),
+        metadata: HashMap::new(),
+        version_id: None,
+    };
+
+    if let Ok(metadata_json) = serde_json::to_string(&metadata) {
+        if let Err(e) = fs::write(&metadata_path, metadata_json) {
+            warn!("Failed to write metadata file: {}", e);
+        } else {
+            debug!("Metadata saved to: {:?}", metadata_path);
+        }
+    }
+
     // Update in-memory metadata
     let mut buckets = state.buckets.lock().unwrap();
     let bucket_data = match buckets.get_mut(&bucket) {
@@ -1005,25 +1045,38 @@ async fn get_object(
         }
     };
 
-    // Get metadata from in-memory storage (if available)
-    let buckets = state.buckets.lock().unwrap();
-    let (etag, last_modified) = if let Some(bucket_data) = buckets.get(&bucket) {
-        if let Some(obj) = bucket_data.objects.get(&key) {
-            (obj.etag.clone(), obj.last_modified)
+    // Try to read metadata from file
+    let metadata_path = object_path.with_extension("metadata");
+    let (etag, last_modified, content_type) = if let Ok(metadata_json) = fs::read_to_string(&metadata_path) {
+        if let Ok(metadata) = serde_json::from_str::<ObjectMetadata>(&metadata_json) {
+            (metadata.etag, metadata.last_modified, metadata.content_type)
         } else {
-            // File exists on disk but not in metadata, calculate etag
+            // Metadata file exists but couldn't parse, fall back to defaults
             let etag = format!("{:x}", md5::compute(&data));
-            (etag, Utc::now())
+            (etag, Utc::now(), "application/octet-stream".to_string())
         }
     } else {
-        // File exists on disk but bucket not in metadata, calculate etag
-        let etag = format!("{:x}", md5::compute(&data));
-        (etag, Utc::now())
+        // No metadata file, check in-memory storage or calculate
+        let buckets = state.buckets.lock().unwrap();
+        let (etag, last_modified) = if let Some(bucket_data) = buckets.get(&bucket) {
+            if let Some(obj) = bucket_data.objects.get(&key) {
+                (obj.etag.clone(), obj.last_modified)
+            } else {
+                // File exists on disk but not in metadata, calculate etag
+                let etag = format!("{:x}", md5::compute(&data));
+                (etag, Utc::now())
+            }
+        } else {
+            // File exists on disk but bucket not in metadata, calculate etag
+            let etag = format!("{:x}", md5::compute(&data));
+            (etag, Utc::now())
+        };
+        (etag, last_modified, "application/octet-stream".to_string())
     };
 
     Response::builder()
         .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, "application/octet-stream")
+        .header(header::CONTENT_TYPE, content_type)
         .header(header::CONTENT_LENGTH, data.len().to_string())
         .header(header::ETAG, format!("\"{}\"", etag))
         .header(header::LAST_MODIFIED, format_http_date(&last_modified))
@@ -1060,22 +1113,59 @@ async fn head_object(
     State(state): State<AppState>,
     Path((bucket, key)): Path<(String, String)>,
 ) -> impl IntoResponse {
-    let buckets = state.buckets.lock().unwrap();
-    if let Some(bucket_data) = buckets.get(&bucket) {
-        if let Some(obj) = bucket_data.objects.get(&key) {
-            return Response::builder()
-                .status(StatusCode::OK)
-                .header(header::CONTENT_TYPE, "application/octet-stream")
-                .header(header::CONTENT_LENGTH, obj.size.to_string())
-                .header(header::ETAG, format!("\"{}\"", obj.etag))
-                .header(header::LAST_MODIFIED, format_http_date(&obj.last_modified))
-                .body(Body::empty())
-                .unwrap();
-        }
+    // Check if object exists on disk
+    let object_path = state.storage_path.join(&bucket).join(&key);
+
+    if !object_path.exists() {
+        return Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .body(Body::empty())
+            .unwrap();
     }
 
+    // Try to read metadata from file first
+    let metadata_path = object_path.with_extension("metadata");
+    let (size, etag, last_modified, content_type) = if let Ok(metadata_json) = fs::read_to_string(&metadata_path) {
+        if let Ok(metadata) = serde_json::from_str::<ObjectMetadata>(&metadata_json) {
+            (metadata.size, metadata.etag, metadata.last_modified, metadata.content_type)
+        } else {
+            // Metadata file exists but couldn't parse, fall back to file stats
+            let file_metadata = fs::metadata(&object_path).unwrap();
+            let size = file_metadata.len();
+            let data = fs::read(&object_path).unwrap_or_default();
+            let etag = format!("{:x}", md5::compute(&data));
+            (size, etag, Utc::now(), "application/octet-stream".to_string())
+        }
+    } else {
+        // No metadata file, check in-memory storage or use file stats
+        let buckets = state.buckets.lock().unwrap();
+        if let Some(bucket_data) = buckets.get(&bucket) {
+            if let Some(obj) = bucket_data.objects.get(&key) {
+                return Response::builder()
+                    .status(StatusCode::OK)
+                    .header(header::CONTENT_TYPE, "application/octet-stream")
+                    .header(header::CONTENT_LENGTH, obj.size.to_string())
+                    .header(header::ETAG, format!("\"{}\"", obj.etag))
+                    .header(header::LAST_MODIFIED, format_http_date(&obj.last_modified))
+                    .body(Body::empty())
+                    .unwrap();
+            }
+        }
+
+        // Fall back to file stats
+        let file_metadata = fs::metadata(&object_path).unwrap();
+        let size = file_metadata.len();
+        let data = fs::read(&object_path).unwrap_or_default();
+        let etag = format!("{:x}", md5::compute(&data));
+        (size, etag, Utc::now(), "application/octet-stream".to_string())
+    };
+
     Response::builder()
-        .status(StatusCode::NOT_FOUND)
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, content_type)
+        .header(header::CONTENT_LENGTH, size.to_string())
+        .header(header::ETAG, format!("\"{}\"", etag))
+        .header(header::LAST_MODIFIED, format_http_date(&last_modified))
         .body(Body::empty())
         .unwrap()
 }

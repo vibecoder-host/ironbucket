@@ -30,6 +30,7 @@ redis-data/*
 # Build outputs
 dist/
 build/
+target/
 
 # IDE files
 .vscode/
