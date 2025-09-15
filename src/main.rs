@@ -8,7 +8,7 @@ use axum::{
     Router,
 };
 use bytes::Bytes;
-use chrono::{Utc, DateTime};
+use chrono::{Utc, DateTime, TimeZone};
 use serde::{Deserialize, Serialize};
 use serde_json;
 use std::{
@@ -443,11 +443,10 @@ async fn cleanup_empty_directories(storage_path: PathBuf) {
 
     info!("Starting empty folder cleanup task - will run every {} minutes", interval_minutes);
 
-    let mut interval = tokio::time::interval(Duration::from_secs(interval_minutes * 60));
+    // Wait for first interval before starting cleanup
+    tokio::time::sleep(Duration::from_secs(interval_minutes * 60)).await;
 
     loop {
-        interval.tick().await;
-
         info!("Running empty folder cleanup scan...");
         let mut removed_count = 0;
 
@@ -466,6 +465,9 @@ async fn cleanup_empty_directories(storage_path: PathBuf) {
         } else {
             debug!("Cleanup completed: no empty directories found");
         }
+
+        // Wait for the next interval
+        tokio::time::sleep(Duration::from_secs(interval_minutes * 60)).await;
     }
 }
 
@@ -646,10 +648,11 @@ async fn handle_bucket_get(
 ) -> impl IntoResponse {
     debug!("GET bucket: {} with params: {:?}", bucket, params);
 
-    // Check if bucket exists
+    // Check if bucket exists (either in memory or on filesystem)
     {
         let buckets = state.buckets.lock().unwrap();
-        if !buckets.contains_key(&bucket) {
+        let bucket_path = state.storage_path.join(&bucket);
+        if !buckets.contains_key(&bucket) && (!bucket_path.exists() || !bucket_path.is_dir()) {
             return Response::builder()
                 .status(StatusCode::NOT_FOUND)
                 .body(Body::empty())
@@ -2388,7 +2391,40 @@ async fn handle_object_delete(
 
 async fn list_buckets(State(state): State<AppState>) -> impl IntoResponse {
     debug!("Listing buckets");
+
+    // First, scan the filesystem for existing buckets
+    let mut all_buckets = Vec::new();
+
+    // Read buckets from filesystem
+    if let Ok(entries) = fs::read_dir(&state.storage_path) {
+        for entry in entries.flatten() {
+            if let Ok(metadata) = entry.metadata() {
+                if metadata.is_dir() {
+                    if let Some(name) = entry.file_name().to_str() {
+                        let created = metadata.created()
+                            .ok()
+                            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                            .map(|d| Utc.timestamp_opt(d.as_secs() as i64, d.subsec_nanos()).unwrap())
+                            .unwrap_or_else(Utc::now);
+
+                        all_buckets.push((name.to_string(), created));
+                    }
+                }
+            }
+        }
+    }
+
+    // Also include any buckets from memory (in case they have different metadata)
     let buckets = state.buckets.lock().unwrap();
+    for (name, data) in buckets.iter() {
+        // Check if this bucket is already in our list from filesystem
+        if !all_buckets.iter().any(|(n, _)| n == name) {
+            all_buckets.push((name.clone(), data.created));
+        }
+    }
+
+    // Sort buckets by name for consistent output
+    all_buckets.sort_by(|a, b| a.0.cmp(&b.0));
 
     let mut xml = String::from(r#"<?xml version="1.0" encoding="UTF-8"?>
 <ListAllMyBucketsResult>
@@ -2398,7 +2434,7 @@ async fn list_buckets(State(state): State<AppState>) -> impl IntoResponse {
     </Owner>
     <Buckets>"#);
 
-    for (name, data) in buckets.iter() {
+    for (name, created) in all_buckets {
         xml.push_str(&format!(
             r#"
         <Bucket>
@@ -2406,7 +2442,7 @@ async fn list_buckets(State(state): State<AppState>) -> impl IntoResponse {
             <CreationDate>{}</CreationDate>
         </Bucket>"#,
             name,
-            data.created.to_rfc3339()
+            created.to_rfc3339()
         ));
     }
 
@@ -2674,24 +2710,68 @@ async fn list_objects_impl(
     info!("Listing objects in bucket: {} with prefix: {:?}, delimiter: {:?}, continuation_token: {:?}, max_keys: {:?}",
            bucket, prefix, delimiter, continuation_token, max_keys);
 
-    let buckets = state.buckets.lock().unwrap();
-    let bucket_data = match buckets.get(&bucket) {
-        Some(data) => data,
-        None => return Response::builder()
+    // First check if bucket exists on filesystem
+    let bucket_path = state.storage_path.join(&bucket);
+    if !bucket_path.exists() || !bucket_path.is_dir() {
+        return Response::builder()
             .status(StatusCode::NOT_FOUND)
             .body(Body::empty())
-            .unwrap(),
-    };
+            .unwrap();
+    }
 
     let prefix_str = prefix.as_deref().unwrap_or("");
     let max_keys = max_keys.unwrap_or(1000);
 
     // Collect all matching objects into a sorted vector for consistent pagination
-    let mut all_objects: Vec<_> = bucket_data.objects
-        .iter()
-        .filter(|(key, _)| key.starts_with(prefix_str))
-        .collect();
-    all_objects.sort_by_key(|(key, _)| key.as_str());
+    let mut all_objects: Vec<(String, ObjectData)> = Vec::new();
+
+    // First, try to get objects from memory if bucket is loaded
+    let buckets = state.buckets.lock().unwrap();
+    if let Some(bucket_data) = buckets.get(&bucket) {
+        // Use objects from memory
+        for (key, obj) in bucket_data.objects.iter() {
+            if key.starts_with(prefix_str) {
+                all_objects.push((key.clone(), obj.clone()));
+            }
+        }
+    } else {
+        // Scan filesystem for objects
+        if let Ok(entries) = fs::read_dir(&bucket_path) {
+            for entry in entries.flatten() {
+                if let Ok(metadata) = entry.metadata() {
+                    if metadata.is_file() {
+                        if let Some(name) = entry.file_name().to_str() {
+                            // Skip metadata files
+                            if !name.ends_with(".metadata") {
+                                let key = name.to_string();
+                                if key.starts_with(prefix_str) {
+                                    let size = metadata.len() as usize;
+                                    let last_modified = metadata.modified()
+                                        .ok()
+                                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                                        .map(|d| Utc.timestamp_opt(d.as_secs() as i64, d.subsec_nanos()).unwrap())
+                                        .unwrap_or_else(Utc::now);
+
+                                    // For listing, we don't need the actual data, just metadata
+                                    // Calculate a simple etag based on size and modified time
+                                    let etag = format!("{:x}", md5::compute(format!("{}-{}", size, last_modified.timestamp()).as_bytes()));
+
+                                    all_objects.push((key, ObjectData {
+                                        data: Vec::new(), // Empty data for listing
+                                        size,
+                                        last_modified,
+                                        etag,
+                                    }));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    all_objects.sort_by_key(|(key, _)| key.clone());
 
     // Apply pagination
     let start_after = continuation_token.as_deref().unwrap_or("");
@@ -2709,7 +2789,7 @@ async fn list_objects_impl(
     // Check if there are more objects
     let is_truncated = end_index < all_objects.len();
     let next_continuation_token = if is_truncated {
-        page_objects.last().map(|(key, _)| key.clone())
+        page_objects.last().map(|(key, _)| key.to_string())
     } else {
         None
     };
