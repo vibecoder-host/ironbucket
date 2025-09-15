@@ -1,6 +1,6 @@
 use axum::{
     body::Body,
-    extract::{Path, Query, State},
+    extract::{DefaultBodyLimit, Path, Query, State},
     http::{header, HeaderMap, StatusCode, Method, Request},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -489,6 +489,7 @@ async fn main() {
 
         .layer(middleware::from_fn_with_state(state.clone(), auth_middleware))
         .layer(CorsLayer::permissive())
+        .layer(DefaultBodyLimit::disable()) // Disable body limit for S3 compatibility
         .with_state(state);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], 9000));
@@ -1745,6 +1746,44 @@ async fn handle_bucket_post(
         for obj in objects_to_delete {
             let object_path = state.storage_path.join(&bucket).join(&obj.key);
             let metadata_path = state.storage_path.join(&bucket).join(format!("{}.metadata", obj.key));
+
+            // Handle directory deletion attempts
+            if obj.key.ends_with('/') || object_path.is_dir() {
+                // In S3, deleting a "directory" (prefix) succeeds if it's empty
+                if object_path.is_dir() {
+                    // Try to remove empty directory
+                    match fs::remove_dir(&object_path) {
+                        Ok(_) => {
+                            info!("Batch delete: Deleted empty directory: {}/{}", bucket, obj.key);
+                            result.deleted.push(DeletedObject {
+                                key: obj.key,
+                                version_id: obj.version_id,
+                                delete_marker: false,
+                                delete_marker_version_id: None,
+                            });
+                        }
+                        Err(_) => {
+                            // Directory might not be empty or might not exist
+                            // In S3, this is still considered successful
+                            result.deleted.push(DeletedObject {
+                                key: obj.key,
+                                version_id: obj.version_id,
+                                delete_marker: false,
+                                delete_marker_version_id: None,
+                            });
+                        }
+                    }
+                } else {
+                    // Path doesn't exist, but in S3 this is still successful
+                    result.deleted.push(DeletedObject {
+                        key: obj.key,
+                        version_id: obj.version_id,
+                        delete_marker: false,
+                        delete_marker_version_id: None,
+                    });
+                }
+                continue;
+            }
 
             // Check if object exists
             if !object_path.exists() {
@@ -3015,8 +3054,34 @@ async fn delete_object(
 ) -> impl IntoResponse {
     info!("Deleting object: {}/{}", bucket, key);
 
-    // Delete from disk
+    // Check if the path is a directory
     let object_path = state.storage_path.join(&bucket).join(&key);
+
+    // If path ends with '/' or is a directory, handle it as a prefix deletion
+    if key.ends_with('/') || object_path.is_dir() {
+        // In S3, deleting a "directory" (prefix) succeeds if it's empty
+        // For filesystem-based storage, we try to remove the directory
+        if object_path.is_dir() {
+            // Try to remove empty directory
+            match fs::remove_dir(&object_path) {
+                Ok(_) => {
+                    info!("Deleted empty directory: {}/{}", bucket, key);
+                    return StatusCode::NO_CONTENT;
+                }
+                Err(e) => {
+                    // Directory might not be empty or might not exist
+                    debug!("Failed to delete directory {}/{}: {}", bucket, key, e);
+                    // In S3, attempting to delete a non-existent prefix returns 204
+                    return StatusCode::NO_CONTENT;
+                }
+            }
+        } else {
+            // Path doesn't exist, but in S3 this is still successful
+            return StatusCode::NO_CONTENT;
+        }
+    }
+
+    // Delete from disk
     let disk_deleted = fs::remove_file(&object_path).is_ok();
 
     // Also delete metadata file
