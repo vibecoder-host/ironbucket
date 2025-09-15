@@ -2736,15 +2736,19 @@ async fn list_objects_impl(
         }
     } else {
         // Scan filesystem for objects
+        info!("Bucket not in memory, scanning filesystem at: {:?}", bucket_path);
         if let Ok(entries) = fs::read_dir(&bucket_path) {
+            let mut file_count = 0;
             for entry in entries.flatten() {
                 if let Ok(metadata) = entry.metadata() {
                     if metadata.is_file() {
                         if let Some(name) = entry.file_name().to_str() {
-                            // Skip metadata files
-                            if !name.ends_with(".metadata") {
+                            debug!("Found file in bucket: {}", name);
+                            // Skip metadata files and hidden files
+                            if !name.ends_with(".metadata") && !name.starts_with(".") {
                                 let key = name.to_string();
                                 if key.starts_with(prefix_str) {
+                                    file_count += 1;
                                     let size = metadata.len() as usize;
                                     let last_modified = metadata.modified()
                                         .ok()
@@ -2768,6 +2772,9 @@ async fn list_objects_impl(
                     }
                 }
             }
+            info!("Found {} files in bucket {}", file_count, bucket);
+        } else {
+            warn!("Failed to read directory: {:?}", bucket_path);
         }
     }
 
