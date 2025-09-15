@@ -1707,40 +1707,37 @@ async fn handle_bucket_post(
         };
 
         // Parse XML to extract objects to delete
+        // AWS sends compact XML on a single line, so we need to parse it differently
         let mut objects_to_delete = Vec::new();
-        let mut current_key = None;
-        let mut current_version_id = None;
-        let mut in_object = false;
 
-        for line in body_str.lines() {
-            let line = line.trim();
+        // Use regex to extract keys from the XML
+        // Match <Key>...</Key> patterns
+        let mut pos = 0;
+        while let Some(key_start) = body_str[pos..].find("<Key>") {
+            let key_start = pos + key_start + 5; // Skip past "<Key>"
+            if let Some(key_end) = body_str[key_start..].find("</Key>") {
+                let key = body_str[key_start..key_start + key_end].to_string();
 
-            if line.contains("<Object>") {
-                in_object = true;
-                current_key = None;
-                current_version_id = None;
-            } else if line.contains("</Object>") {
-                if let Some(key) = current_key.take() {
-                    objects_to_delete.push(DeleteObject {
-                        key,
-                        version_id: current_version_id.take(),
-                    });
-                }
-                in_object = false;
-            } else if in_object {
-                if line.contains("<Key>") && line.contains("</Key>") {
-                    if let Some(start) = line.find("<Key>") {
-                        if let Some(end) = line.find("</Key>") {
-                            current_key = Some(line[start + 5..end].to_string());
-                        }
-                    }
-                } else if line.contains("<VersionId>") && line.contains("</VersionId>") {
-                    if let Some(start) = line.find("<VersionId>") {
-                        if let Some(end) = line.find("</VersionId>") {
-                            current_version_id = Some(line[start + 11..end].to_string());
+                // Check if there's a version ID for this object
+                let mut version_id = None;
+                // Look for VersionId between this Key and the next </Object>
+                if let Some(obj_end) = body_str[key_start..].find("</Object>") {
+                    let obj_section = &body_str[key_start..key_start + obj_end];
+                    if let Some(ver_start) = obj_section.find("<VersionId>") {
+                        if let Some(ver_end) = obj_section[ver_start + 11..].find("</VersionId>") {
+                            version_id = Some(obj_section[ver_start + 11..ver_start + 11 + ver_end].to_string());
                         }
                     }
                 }
+
+                objects_to_delete.push(DeleteObject {
+                    key,
+                    version_id,
+                });
+
+                pos = key_start + key_end;
+            } else {
+                break;
             }
         }
 
