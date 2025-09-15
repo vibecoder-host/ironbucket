@@ -13,10 +13,12 @@ use serde::{Deserialize, Serialize};
 use serde_json;
 use std::{
     collections::HashMap,
+    env,
     fs,
     net::SocketAddr,
     path::PathBuf,
     sync::{Arc, Mutex},
+    time::Duration,
 };
 use tower_http::cors::CorsLayer;
 use tracing::{info, debug, warn};
@@ -424,6 +426,102 @@ struct UploadPart {
     data: Vec<u8>,
 }
 
+// Function to recursively remove empty directories
+async fn cleanup_empty_directories(storage_path: PathBuf) {
+    let auto_remove = env::var("AUTO_REMOVE_EMPTY_FOLDERS")
+        .unwrap_or_else(|_| "0".to_string());
+
+    if auto_remove != "1" {
+        info!("Auto-remove empty folders is disabled");
+        return;
+    }
+
+    let interval_minutes = env::var("AUTO_REMOVE_EMPTY_FOLDERS_EVERY_X_MIN")
+        .unwrap_or_else(|_| "5".to_string())
+        .parse::<u64>()
+        .unwrap_or(5);
+
+    info!("Starting empty folder cleanup task - will run every {} minutes", interval_minutes);
+
+    let mut interval = tokio::time::interval(Duration::from_secs(interval_minutes * 60));
+
+    loop {
+        interval.tick().await;
+
+        info!("Running empty folder cleanup scan...");
+        let mut removed_count = 0;
+
+        // Scan all bucket directories
+        if let Ok(entries) = fs::read_dir(&storage_path) {
+            for entry in entries.flatten() {
+                if entry.path().is_dir() {
+                    // This is a bucket directory - never delete it, only clean inside
+                    removed_count += remove_empty_dirs_in_bucket(&entry.path());
+                }
+            }
+        }
+
+        if removed_count > 0 {
+            info!("Cleanup completed: removed {} empty directories", removed_count);
+        } else {
+            debug!("Cleanup completed: no empty directories found");
+        }
+    }
+}
+
+// Helper function to remove empty subdirectories within a bucket (never the bucket itself)
+fn remove_empty_dirs_in_bucket(bucket_dir: &std::path::Path) -> usize {
+    let mut removed_count = 0;
+
+    if let Ok(entries) = fs::read_dir(bucket_dir) {
+        let subdirs: Vec<_> = entries
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().is_dir())
+            .collect();
+
+        // Process each subdirectory
+        for subdir in &subdirs {
+            removed_count += remove_empty_subdir_recursive(&subdir.path());
+        }
+    }
+
+    removed_count
+}
+
+// Recursively remove empty subdirectories (used for directories inside buckets)
+fn remove_empty_subdir_recursive(dir: &std::path::Path) -> usize {
+    let mut removed_count = 0;
+
+    // First, recursively process all subdirectories
+    if let Ok(entries) = fs::read_dir(dir) {
+        let subdirs: Vec<_> = entries
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().is_dir())
+            .collect();
+
+        // Recursively clean subdirectories first
+        for subdir in &subdirs {
+            removed_count += remove_empty_subdir_recursive(&subdir.path());
+        }
+    }
+
+    // Now check if this directory is empty and can be removed
+    // Don't remove .multipart directories as they may be needed
+    if dir.file_name() != Some(std::ffi::OsStr::new(".multipart")) {
+        if let Ok(mut entries) = fs::read_dir(dir) {
+            if entries.next().is_none() {
+                // Directory is empty
+                if fs::remove_dir(dir).is_ok() {
+                    debug!("Removed empty directory: {:?}", dir);
+                    removed_count += 1;
+                }
+            }
+        }
+    }
+
+    removed_count
+}
+
 #[tokio::main]
 async fn main() {
     dotenv::dotenv().ok();
@@ -457,7 +555,7 @@ async fn main() {
     info!("Using access key: {}", access_key);
 
     let state = AppState {
-        storage_path,
+        storage_path: storage_path.clone(),
         buckets: Arc::new(Mutex::new(HashMap::new())),
         access_keys: Arc::new(access_keys),
         multipart_uploads: Arc::new(Mutex::new(HashMap::new())),
@@ -491,6 +589,9 @@ async fn main() {
         .layer(CorsLayer::permissive())
         .layer(DefaultBodyLimit::disable()) // Disable body limit for S3 compatibility
         .with_state(state);
+
+    // Spawn the background cleanup task
+    tokio::spawn(cleanup_empty_directories(storage_path.clone()));
 
     let addr = SocketAddr::from(([0, 0, 0, 0], 9000));
     info!("IronBucket listening on {} with full S3 API support", addr);
