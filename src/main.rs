@@ -690,16 +690,23 @@ async fn handle_bucket_get(
     <Status>{}</Status>
 </VersioningConfiguration>"#, status)
         } else {
-            r#"<?xml version="1.0" encoding="UTF-8"?>
-<VersioningConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
-</VersioningConfiguration>"#.to_string()
+            // AWS returns empty body when versioning is not configured
+            String::new()
         };
 
-        return Response::builder()
-            .status(StatusCode::OK)
-            .header(header::CONTENT_TYPE, "application/xml")
-            .body(Body::from(versioning_xml))
-            .unwrap();
+        if versioning_xml.is_empty() {
+            // Return empty body for no versioning configuration
+            return Response::builder()
+                .status(StatusCode::OK)
+                .body(Body::empty())
+                .unwrap();
+        } else {
+            return Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, "application/xml")
+                .body(Body::from(versioning_xml))
+                .unwrap();
+        }
     }
 
     if params.acl.is_some() {
@@ -1156,10 +1163,26 @@ async fn handle_bucket_get(
                     continue;
                 }
 
+                // Load version ID from metadata file if available
+                let metadata_path = state.storage_path.join(&bucket).join(format!("{}.metadata", key));
+                let version_id = if metadata_path.exists() {
+                    if let Ok(metadata_str) = fs::read_to_string(&metadata_path) {
+                        if let Ok(metadata) = serde_json::from_str::<ObjectMetadata>(&metadata_str) {
+                            metadata.version_id.unwrap_or_else(|| "null".to_string())
+                        } else {
+                            "null".to_string()
+                        }
+                    } else {
+                        "null".to_string()
+                    }
+                } else {
+                    "null".to_string()
+                };
+
                 xml.push_str(&format!(r#"
     <Version>
         <Key>{}</Key>
-        <VersionId>null</VersionId>
+        <VersionId>{}</VersionId>
         <IsLatest>true</IsLatest>
         <LastModified>{}</LastModified>
         <ETag>"{}"</ETag>
@@ -1167,6 +1190,7 @@ async fn handle_bucket_get(
         <StorageClass>STANDARD</StorageClass>
     </Version>"#,
                     key,
+                    version_id,
                     obj.last_modified.to_rfc3339(),
                     obj.etag,
                     obj.size

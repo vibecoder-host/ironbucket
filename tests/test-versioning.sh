@@ -17,6 +17,10 @@ check_dependencies
 echo "Testing Object Versioning"
 echo "========================="
 
+# Initialize test counters
+TESTS_PASSED=0
+TESTS_FAILED=0
+
 check_ironbucket_running
 
 # Generate unique test bucket name
@@ -53,9 +57,10 @@ TESTS_PASSED=$((TESTS_PASSED + 1))
 # Test 2: Check default versioning status (should be disabled/null)
 echo -e "\n${YELLOW}▶ Check default versioning status${NC}"
 VERSIONING_STATUS=$(aws s3api get-bucket-versioning --bucket "${TEST_BUCKET}" \
-    --endpoint-url "$S3_ENDPOINT" 2>/dev/null || echo '{}')
+    --endpoint-url "$S3_ENDPOINT" 2>/dev/null || echo 'ERROR')
 
-if [ "$VERSIONING_STATUS" = "{}" ] || echo "$VERSIONING_STATUS" | grep -q '"Status": null'; then
+# AWS returns empty body when versioning is not configured
+if [ -z "$VERSIONING_STATUS" ] || [ "$VERSIONING_STATUS" = "{}" ] || echo "$VERSIONING_STATUS" | grep -q '"Status": null'; then
     echo -e "${GREEN}✓ Default versioning status is disabled${NC}"
     TESTS_PASSED=$((TESTS_PASSED + 1))
 else
@@ -245,4 +250,4 @@ else
 fi
 
 # Print test summary
-print_summary
+print_summary $TESTS_PASSED $TESTS_FAILED
