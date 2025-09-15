@@ -6,12 +6,13 @@ services:
       - "172.17.0.1:20000:9000"
     volumes:
       - ./s3:/s3
-      - ./.env:/app/.env
+    env_file:
+      - .env
     environment:
       - RUST_LOG=ironbucket=info,tower_http=info
       - STORAGE_PATH=/s3
-      - ACCESS_KEY=root
-      - SECRET_KEY=xxxxxxxxxxxxxxx
+      - ACCESS_KEY=${ACCESS_KEY:-root}
+      - SECRET_KEY=${SECRET_KEY:-xxxxxxxxxxxxxxx}
       - AUTO_REMOVE_EMPTY_FOLDERS=1
       - AUTO_REMOVE_EMPTY_FOLDERS_EVERY_X_MIN=5
     restart: always
