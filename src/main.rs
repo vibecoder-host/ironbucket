@@ -2726,32 +2726,67 @@ async fn list_objects_impl(
     let mut all_objects: Vec<(String, ObjectData)> = Vec::new();
 
     // Always scan filesystem for objects to ensure consistency
-    info!("Scanning filesystem for objects at: {:?}", bucket_path);
-    if let Ok(entries) = fs::read_dir(&bucket_path) {
-        let mut file_count = 0;
-        for entry in entries.flatten() {
-            if let Ok(metadata) = entry.metadata() {
-                if metadata.is_file() {
+    // Use a recursive approach to handle prefixes that represent directories
+    info!("Scanning filesystem for objects at: {:?} with prefix: {:?}", bucket_path, prefix_str);
+
+    fn scan_directory(base_path: &std::path::Path, current_prefix: &str, target_prefix: &str, delimiter: Option<&str>) -> Vec<(String, ObjectData)> {
+        let mut results = Vec::new();
+
+        // Determine which directory to scan based on the prefix
+        let scan_path = if !target_prefix.is_empty() && target_prefix.ends_with('/') {
+            // If prefix ends with /, scan that subdirectory
+            base_path.join(&target_prefix[..target_prefix.len()-1])
+        } else if !target_prefix.is_empty() && target_prefix.contains('/') {
+            // If prefix contains / but doesn't end with it, scan the parent directory
+            let parts: Vec<&str> = target_prefix.rsplitn(2, '/').collect();
+            if parts.len() == 2 {
+                base_path.join(parts[1])
+            } else {
+                base_path.to_path_buf()
+            }
+        } else {
+            base_path.to_path_buf()
+        };
+
+        if let Ok(entries) = fs::read_dir(&scan_path) {
+            for entry in entries.flatten() {
+                if let Ok(metadata) = entry.metadata() {
                     if let Some(name) = entry.file_name().to_str() {
-                        debug!("Found file in bucket: {}", name);
                         // Skip metadata files and hidden files
                         if !name.ends_with(".metadata") && !name.starts_with(".") {
-                            let key = name.to_string();
-                            if key.starts_with(prefix_str) {
-                                file_count += 1;
-                                let size = metadata.len() as usize;
+                            // Build the full key path relative to bucket
+                            let relative_path = if let Ok(rel) = entry.path().strip_prefix(base_path) {
+                                rel.to_string_lossy().to_string()
+                            } else {
+                                continue;
+                            };
+
+                            // Convert Windows paths to forward slashes
+                            let mut key = relative_path.replace('\\', "/");
+
+                            // Add trailing slash for directories
+                            if metadata.is_dir() {
+                                key.push('/');
+                            }
+
+                            // Check if this key matches our target prefix
+                            if key.starts_with(target_prefix) {
+                                let size = if metadata.is_file() {
+                                    metadata.len() as usize
+                                } else {
+                                    0 // Directories have size 0
+                                };
+
                                 let last_modified = metadata.modified()
                                     .ok()
                                     .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                                     .map(|d| Utc.timestamp_opt(d.as_secs() as i64, d.subsec_nanos()).unwrap())
                                     .unwrap_or_else(Utc::now);
 
-                                // For listing, we don't need the actual data, just metadata
-                                // Calculate a simple etag based on size and modified time
                                 let etag = format!("{:x}", md5::compute(format!("{}-{}", size, last_modified.timestamp()).as_bytes()));
 
-                                all_objects.push((key, ObjectData {
-                                    data: Vec::new(), // Empty data for listing
+                                results.push((key, ObjectData {
+                                    data: Vec::new(),
                                     size,
                                     last_modified,
                                     etag,
@@ -2762,10 +2797,14 @@ async fn list_objects_impl(
                 }
             }
         }
-        info!("Found {} files in bucket {}", file_count, bucket);
-    } else {
-        warn!("Failed to read directory: {:?}", bucket_path);
+
+        results
     }
+
+    let mut all_objects = scan_directory(&bucket_path, "", prefix_str, delimiter.as_deref());
+    let object_count = all_objects.len();
+    info!("Scan complete: {} total objects matching prefix '{}' in bucket {}",
+          object_count, prefix_str, bucket);
 
     all_objects.sort_by_key(|(key, _)| key.clone());
 
@@ -3027,6 +3066,29 @@ async fn put_object(
 
     // Write object to disk
     let object_path = bucket_path.join(&key);
+
+    // Handle folder creation (keys ending with /)
+    if key.ends_with('/') {
+        // This is a folder creation request
+        if let Err(e) = fs::create_dir_all(&object_path) {
+            warn!("Failed to create folder: {}", e);
+            return Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .body(Body::from("Failed to create folder"))
+                .unwrap();
+        }
+
+        info!("Created folder: {}/{}", bucket, key);
+
+        // Return success for folder creation
+        return Response::builder()
+            .status(StatusCode::OK)
+            .header(header::ETAG, format!("\"{}\"", etag))
+            .body(Body::empty())
+            .unwrap();
+    }
+
+    // Regular file handling
     if let Some(parent) = object_path.parent() {
         if let Err(e) = fs::create_dir_all(parent) {
             warn!("Failed to create object parent directory: {}", e);
@@ -3308,17 +3370,25 @@ async fn delete_object(
         // In S3, deleting a "directory" (prefix) succeeds if it's empty
         // For filesystem-based storage, we try to remove the directory
         if object_path.is_dir() {
-            // Try to remove empty directory
+            // First try to remove as empty directory
             match fs::remove_dir(&object_path) {
                 Ok(_) => {
                     info!("Deleted empty directory: {}/{}", bucket, key);
                     return StatusCode::NO_CONTENT;
                 }
-                Err(e) => {
-                    // Directory might not be empty or might not exist
-                    debug!("Failed to delete directory {}/{}: {}", bucket, key, e);
-                    // In S3, attempting to delete a non-existent prefix returns 204
-                    return StatusCode::NO_CONTENT;
+                Err(_) => {
+                    // If directory is not empty, recursively delete all contents
+                    match fs::remove_dir_all(&object_path) {
+                        Ok(_) => {
+                            info!("Deleted directory and all contents: {}/{}", bucket, key);
+                            return StatusCode::NO_CONTENT;
+                        }
+                        Err(e) => {
+                            warn!("Failed to delete directory {}/{}: {}", bucket, key, e);
+                            // In S3, attempting to delete a non-existent prefix returns 204
+                            return StatusCode::NO_CONTENT;
+                        }
+                    }
                 }
             }
         } else {
