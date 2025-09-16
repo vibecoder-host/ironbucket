@@ -2725,57 +2725,46 @@ async fn list_objects_impl(
     // Collect all matching objects into a sorted vector for consistent pagination
     let mut all_objects: Vec<(String, ObjectData)> = Vec::new();
 
-    // First, try to get objects from memory if bucket is loaded
-    let buckets = state.buckets.lock().unwrap();
-    if let Some(bucket_data) = buckets.get(&bucket) {
-        // Use objects from memory
-        for (key, obj) in bucket_data.objects.iter() {
-            if key.starts_with(prefix_str) {
-                all_objects.push((key.clone(), obj.clone()));
-            }
-        }
-    } else {
-        // Scan filesystem for objects
-        info!("Bucket not in memory, scanning filesystem at: {:?}", bucket_path);
-        if let Ok(entries) = fs::read_dir(&bucket_path) {
-            let mut file_count = 0;
-            for entry in entries.flatten() {
-                if let Ok(metadata) = entry.metadata() {
-                    if metadata.is_file() {
-                        if let Some(name) = entry.file_name().to_str() {
-                            debug!("Found file in bucket: {}", name);
-                            // Skip metadata files and hidden files
-                            if !name.ends_with(".metadata") && !name.starts_with(".") {
-                                let key = name.to_string();
-                                if key.starts_with(prefix_str) {
-                                    file_count += 1;
-                                    let size = metadata.len() as usize;
-                                    let last_modified = metadata.modified()
-                                        .ok()
-                                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                                        .map(|d| Utc.timestamp_opt(d.as_secs() as i64, d.subsec_nanos()).unwrap())
-                                        .unwrap_or_else(Utc::now);
+    // Always scan filesystem for objects to ensure consistency
+    info!("Scanning filesystem for objects at: {:?}", bucket_path);
+    if let Ok(entries) = fs::read_dir(&bucket_path) {
+        let mut file_count = 0;
+        for entry in entries.flatten() {
+            if let Ok(metadata) = entry.metadata() {
+                if metadata.is_file() {
+                    if let Some(name) = entry.file_name().to_str() {
+                        debug!("Found file in bucket: {}", name);
+                        // Skip metadata files and hidden files
+                        if !name.ends_with(".metadata") && !name.starts_with(".") {
+                            let key = name.to_string();
+                            if key.starts_with(prefix_str) {
+                                file_count += 1;
+                                let size = metadata.len() as usize;
+                                let last_modified = metadata.modified()
+                                    .ok()
+                                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                                    .map(|d| Utc.timestamp_opt(d.as_secs() as i64, d.subsec_nanos()).unwrap())
+                                    .unwrap_or_else(Utc::now);
 
-                                    // For listing, we don't need the actual data, just metadata
-                                    // Calculate a simple etag based on size and modified time
-                                    let etag = format!("{:x}", md5::compute(format!("{}-{}", size, last_modified.timestamp()).as_bytes()));
+                                // For listing, we don't need the actual data, just metadata
+                                // Calculate a simple etag based on size and modified time
+                                let etag = format!("{:x}", md5::compute(format!("{}-{}", size, last_modified.timestamp()).as_bytes()));
 
-                                    all_objects.push((key, ObjectData {
-                                        data: Vec::new(), // Empty data for listing
-                                        size,
-                                        last_modified,
-                                        etag,
-                                    }));
-                                }
+                                all_objects.push((key, ObjectData {
+                                    data: Vec::new(), // Empty data for listing
+                                    size,
+                                    last_modified,
+                                    etag,
+                                }));
                             }
                         }
                     }
                 }
             }
-            info!("Found {} files in bucket {}", file_count, bucket);
-        } else {
-            warn!("Failed to read directory: {:?}", bucket_path);
         }
+        info!("Found {} files in bucket {}", file_count, bucket);
+    } else {
+        warn!("Failed to read directory: {:?}", bucket_path);
     }
 
     all_objects.sort_by_key(|(key, _)| key.clone());
@@ -3199,38 +3188,8 @@ async fn put_object(
         }
     }
 
-    // Update in-memory metadata
-    let mut buckets = state.buckets.lock().unwrap();
-    let bucket_data = match buckets.get_mut(&bucket) {
-        Some(data) => data,
-        None => {
-            // Create bucket if it doesn't exist
-            buckets.insert(
-                bucket.clone(),
-                BucketData {
-                    created: Utc::now(),
-                    objects: HashMap::new(),
-                    versioning_status: None,
-                    versions: HashMap::new(),
-                    policy: None,
-                    encryption: None,
-                    cors: None,
-                    lifecycle: None,
-                },
-            );
-            buckets.get_mut(&bucket).unwrap()
-        }
-    };
-
-    bucket_data.objects.insert(
-        key.clone(),
-        ObjectData {
-            size: data.len(),
-            data: vec![], // Don't store data in memory, just metadata
-            etag: etag.clone(),
-            last_modified: Utc::now(),
-        },
-    );
+    // Skip in-memory update - always rely on filesystem
+    // This ensures consistency when files are added directly to the filesystem
 
     info!("Object stored at: {:?}", object_path);
 
@@ -3380,15 +3339,9 @@ async fn delete_object(
         debug!("Deleted metadata file for {}/{}", bucket, key);
     }
 
-    // Delete from in-memory metadata
-    let mut buckets = state.buckets.lock().unwrap();
-    let memory_deleted = if let Some(bucket_data) = buckets.get_mut(&bucket) {
-        bucket_data.objects.remove(&key).is_some()
-    } else {
-        false
-    };
+    // Skip in-memory update - always rely on filesystem
 
-    if disk_deleted || memory_deleted || metadata_deleted {
+    if disk_deleted || metadata_deleted {
         StatusCode::NO_CONTENT
     } else {
         StatusCode::NOT_FOUND
