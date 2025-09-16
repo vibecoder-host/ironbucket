@@ -2673,17 +2673,70 @@ async fn delete_bucket(
     }
 
     // Default: delete the bucket itself
-    let mut buckets = state.buckets.lock().unwrap();
-    if buckets.remove(&bucket).is_some() {
-        Response::builder()
-            .status(StatusCode::NO_CONTENT)
-            .body(Body::empty())
-            .unwrap()
-    } else {
-        Response::builder()
+    let bucket_path = state.storage_path.join(&bucket);
+
+    // Check if bucket exists on filesystem
+    if !bucket_path.exists() {
+        return Response::builder()
             .status(StatusCode::NOT_FOUND)
-            .body(Body::empty())
-            .unwrap()
+            .header(header::CONTENT_TYPE, "application/xml")
+            .body(Body::from(format!(r#"<?xml version="1.0" encoding="UTF-8"?>
+<Error>
+    <Code>NoSuchBucket</Code>
+    <Message>The specified bucket does not exist</Message>
+    <BucketName>{}</BucketName>
+</Error>"#, bucket)))
+            .unwrap();
+    }
+
+    // Check if bucket is empty (S3 doesn't allow deleting non-empty buckets)
+    if let Ok(entries) = fs::read_dir(&bucket_path) {
+        let mut has_objects = false;
+        for entry in entries.flatten() {
+            if let Some(name) = entry.file_name().to_str() {
+                // Ignore hidden files like .policy, .cors, .multipart, etc.
+                if !name.starts_with('.') && !name.ends_with(".metadata") {
+                    has_objects = true;
+                    break;
+                }
+            }
+        }
+
+        if has_objects {
+            return Response::builder()
+                .status(StatusCode::CONFLICT)
+                .header(header::CONTENT_TYPE, "application/xml")
+                .body(Body::from(format!(r#"<?xml version="1.0" encoding="UTF-8"?>
+<Error>
+    <Code>BucketNotEmpty</Code>
+    <Message>The bucket you tried to delete is not empty</Message>
+    <BucketName>{}</BucketName>
+</Error>"#, bucket)))
+                .unwrap();
+        }
+    }
+
+    // Remove bucket from in-memory state
+    let mut buckets = state.buckets.lock().unwrap();
+    buckets.remove(&bucket);
+
+    // Delete the bucket directory from filesystem
+    match fs::remove_dir_all(&bucket_path) {
+        Ok(_) => {
+            info!("Successfully deleted bucket: {}", bucket);
+            Response::builder()
+                .status(StatusCode::NO_CONTENT)
+                .body(Body::empty())
+                .unwrap()
+        }
+        Err(e) => {
+            warn!("Failed to delete bucket {} from filesystem: {}", bucket, e);
+            // Still return success if we removed it from memory
+            Response::builder()
+                .status(StatusCode::NO_CONTENT)
+                .body(Body::empty())
+                .unwrap()
+        }
     }
 }
 
