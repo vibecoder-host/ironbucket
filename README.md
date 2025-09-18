@@ -18,60 +18,62 @@ High-performance S3-compatible storage server written in Rust, optimized for spe
 - **CORS Support**: Full cross-origin resource sharing support
 - **Zero-Copy Operations**: Efficient memory usage for large files
 
-## Performance Metrics
+## Benchmarks
 
-Benchmarked with MinIO warp on standard hardware (8 cores / 16GB ram):
+<details>
+<summary><b>📊 View Benchmark Results</b> (MinIO warp, 8 cores / 16GB RAM)</summary>
 
-`  	./warp mixed --host=172.17.0.1:20000 --access-key=XXX --secret-key=XXX \
+```bash
+./warp mixed --host=172.17.0.1:20000 --access-key=XXX --secret-key=XXX \
     --obj.size=100KB --duration=60s --autoterm
-`
+```
 
-1KB files:
-  - Total Throughput: 20,164 obj/s | 11.54 MB/s (mixed workload)
-  - PUT Operations: 3,563 obj/s | 2.88 MB/s
-  - GET Operations: 9,073 obj/s | 8.65 MB/s
-  - DELETE Operations: 2,016 obj/s
-  - STAT Operations: 5,127 obj/s
-  - Latency: < 3ms average response time (P50), 8ms (P99)
-  - Concurrency: Handles 20+ concurrent connections efficiently
+### 1KB Files
+- **Total Throughput**: 20,164 obj/s | 11.54 MB/s (mixed workload)
+- **PUT Operations**: 3,563 obj/s | 2.88 MB/s
+- **GET Operations**: 9,073 obj/s | 8.65 MB/s
+- **DELETE Operations**: 2,016 obj/s
+- **STAT Operations**: 5,127 obj/s
+- **Latency**: < 3ms average response time (P50), 8ms (P99)
+- **Concurrency**: Handles 20+ concurrent connections efficiently
 
-10KB files:
-- Total Throughput: 19,476 obj/s | 111.43 MB/s (mixed workload)
-  - PUT Operations: 2,920 obj/s | 27.85 MB/s
-  - GET Operations: 8,764 obj/s | 83.58 MB/s
-  - DELETE Operations: 1,947 obj/s
-  - STAT Operations: 5,844 obj/s
-  - Latency: < 3ms average response time (P50), 10ms (P99)
-  - Concurrency: Handles 20+ concurrent connections efficiently
+### 10KB Files
+- **Total Throughput**: 19,476 obj/s | 111.43 MB/s (mixed workload)
+- **PUT Operations**: 2,920 obj/s | 27.85 MB/s
+- **GET Operations**: 8,764 obj/s | 83.58 MB/s
+- **DELETE Operations**: 1,947 obj/s
+- **STAT Operations**: 5,844 obj/s
+- **Latency**: < 3ms average response time (P50), 10ms (P99)
+- **Concurrency**: Handles 20+ concurrent connections efficiently
 
-100KB files:
-  - Total Throughput: 14,296 obj/s | 818.28 MB/s (mixed workload)
-  - PUT Operations: 2,144 obj/s | 204.52 MB/s
-  - GET Operations: 6,432 obj/s | 613.49 MB/s
-  - DELETE Operations: 1,429 obj/s
-  - STAT Operations: 4,129 obj/s
-  - Latency: < 4ms average response time (P50), 25ms (P99)
-  - Concurrency: Handles 20+ concurrent connections efficiently
-  
-  
- 1MB files:
-  - Total Throughput: 4,671 obj/s | 2672.35 MB/s (mixed workload)
-  - PUT Operations: 701 obj/s | 668.66 MB/s
-  - GET Operations: 2,101 obj/s | 2003.69 MB/s
-  - DELETE Operations: 467 obj/s
-  - STAT Operations: 1,401 obj/s
-  - Latency: < 15ms average response time (P50), 44ms (P99)
-  - Concurrency: Handles 20+ concurrent connections efficiently
-  
-  
- 10MB files:
-  - Total Throughput: 543 obj/s | 3117.43 MB/s (mixed workload)
-  - PUT Operations: 82 obj/s | 782.53 MB/s
-  - GET Operations: 245 obj/s | 2334.90 MB/s
-  - DELETE Operations: 54 obj/s
-  - STAT Operations: 162 obj/s
-  - Latency: < 50ms average response time (P50), 229ms (P99)
-  - Concurrency: Handles 20+ concurrent connections efficiently  
+### 100KB Files
+- **Total Throughput**: 14,296 obj/s | 818.28 MB/s (mixed workload)
+- **PUT Operations**: 2,144 obj/s | 204.52 MB/s
+- **GET Operations**: 6,432 obj/s | 613.49 MB/s
+- **DELETE Operations**: 1,429 obj/s
+- **STAT Operations**: 4,129 obj/s
+- **Latency**: < 4ms average response time (P50), 25ms (P99)
+- **Concurrency**: Handles 20+ concurrent connections efficiently
+
+### 1MB Files
+- **Total Throughput**: 4,671 obj/s | 2.67 GB/s (mixed workload)
+- **PUT Operations**: 701 obj/s | 668.66 MB/s
+- **GET Operations**: 2,101 obj/s | 2.00 GB/s
+- **DELETE Operations**: 467 obj/s
+- **STAT Operations**: 1,401 obj/s
+- **Latency**: < 15ms average response time (P50), 44ms (P99)
+- **Concurrency**: Handles 20+ concurrent connections efficiently
+
+### 10MB Files
+- **Total Throughput**: 543 obj/s | 3.12 GB/s (mixed workload)
+- **PUT Operations**: 82 obj/s | 782.53 MB/s
+- **GET Operations**: 245 obj/s | 2.33 GB/s
+- **DELETE Operations**: 54 obj/s
+- **STAT Operations**: 162 obj/s
+- **Latency**: < 50ms average response time (P50), 229ms (P99)
+- **Concurrency**: Handles 20+ concurrent connections efficiently
+
+</details>  
   
 
 ## Quick Start
