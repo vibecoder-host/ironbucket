@@ -3131,6 +3131,7 @@ async fn put_object(
 
         // Read the source object
         let source_path = state.storage_path.join(source_bucket).join(&decoded_source_key);
+        let source_metadata_path = state.storage_path.join(source_bucket).join(format!("{}.metadata", &decoded_source_key));
 
         match fs::read(&source_path) {
             Ok(source_data) => {
@@ -3145,6 +3146,7 @@ async fn put_object(
                 }
 
                 let object_path = bucket_path.join(&key);
+                let dest_metadata_path = bucket_path.join(format!("{}.metadata", &key));
 
                 // Create parent directory if needed
                 if let Some(parent) = object_path.parent() {
@@ -3162,8 +3164,61 @@ async fn put_object(
                         .unwrap();
                 }
 
-                info!("Successfully copied object from {}/{} to {}/{}",
-                      source_bucket, decoded_source_key, bucket, key);
+                // Copy metadata file if it exists, or create new metadata
+                let content_type = if source_metadata_path.exists() {
+                    // Read and copy the metadata, updating the key
+                    match fs::read_to_string(&source_metadata_path) {
+                        Ok(metadata_str) => {
+                            if let Ok(mut metadata) = serde_json::from_str::<ObjectMetadata>(&metadata_str) {
+                                // Update the metadata for the new location
+                                metadata.key = key.clone();
+                                metadata.last_modified = Utc::now();
+                                metadata.etag = etag.clone();
+
+                                let ct = metadata.content_type.clone();
+
+                                // Save the updated metadata
+                                if let Ok(metadata_json) = serde_json::to_string(&metadata) {
+                                    if let Err(e) = fs::write(&dest_metadata_path, metadata_json) {
+                                        warn!("Failed to write copied metadata: {}", e);
+                                    } else {
+                                        debug!("Metadata copied to: {:?}", dest_metadata_path);
+                                    }
+                                }
+                                ct
+                            } else {
+                                "application/octet-stream".to_string()
+                            }
+                        }
+                        Err(e) => {
+                            warn!("Failed to read source metadata: {}", e);
+                            "application/octet-stream".to_string()
+                        }
+                    }
+                } else {
+                    // No metadata file exists, create basic metadata
+                    let metadata = ObjectMetadata {
+                        key: key.clone(),
+                        size: data.len() as u64,
+                        etag: etag.clone(),
+                        last_modified: Utc::now(),
+                        content_type: "application/octet-stream".to_string(),
+                        storage_class: "STANDARD".to_string(),
+                        metadata: HashMap::new(),
+                        version_id: None,
+                        encryption: None,
+                    };
+
+                    if let Ok(metadata_json) = serde_json::to_string(&metadata) {
+                        if let Err(e) = fs::write(&dest_metadata_path, metadata_json) {
+                            warn!("Failed to write metadata: {}", e);
+                        }
+                    }
+                    "application/octet-stream".to_string()
+                };
+
+                info!("Successfully copied object from {}/{} to {}/{} with content-type: {}",
+                      source_bucket, decoded_source_key, bucket, key, content_type);
 
                 // Return success response with ETag
                 return Response::builder()
