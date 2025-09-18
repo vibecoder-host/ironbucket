@@ -2132,7 +2132,17 @@ async fn handle_object_put(
 
     if let (Some(upload_id), Some(part_number)) = (&params.upload_id, params.part_number) {
         // Upload part for multipart upload
-        let data = body.to_vec();
+        let mut data = body.to_vec();
+
+        // Check if this is chunked transfer encoding with signature
+        if data.len() > 100 {
+            let preview = String::from_utf8_lossy(&data[0..100]);
+            if preview.contains(";chunk-signature=") {
+                debug!("Detected chunked transfer encoding in multipart upload part, parsing chunks");
+                data = parse_chunked_data(&data);
+            }
+        }
+
         let etag = format!("{:x}", md5::compute(&data));
 
         let mut uploads = state.multipart_uploads.lock().unwrap();
