@@ -18,7 +18,7 @@ High-performance S3-compatible storage server written in Rust, optimized for spe
 - **CORS Support**: Full cross-origin resource sharing support
 - **Zero-Copy Operations**: Efficient memory usage for large files
 
-## Benchmarks
+## Performance Metrics
 
 <details>
 <summary><b>📊 View Benchmark Results</b> (MinIO warp, 8 cores / 16GB RAM)</summary>
@@ -35,7 +35,6 @@ High-performance S3-compatible storage server written in Rust, optimized for spe
 - **DELETE Operations**: 2,016 obj/s
 - **STAT Operations**: 5,127 obj/s
 - **Latency**: < 3ms average response time (P50), 8ms (P99)
-- **Concurrency**: Handles 20+ concurrent connections efficiently
 
 ### 10KB Files
 - **Total Throughput**: 19,476 obj/s | 111.43 MB/s (mixed workload)
@@ -44,7 +43,6 @@ High-performance S3-compatible storage server written in Rust, optimized for spe
 - **DELETE Operations**: 1,947 obj/s
 - **STAT Operations**: 5,844 obj/s
 - **Latency**: < 3ms average response time (P50), 10ms (P99)
-- **Concurrency**: Handles 20+ concurrent connections efficiently
 
 ### 100KB Files
 - **Total Throughput**: 14,296 obj/s | 818.28 MB/s (mixed workload)
@@ -53,7 +51,6 @@ High-performance S3-compatible storage server written in Rust, optimized for spe
 - **DELETE Operations**: 1,429 obj/s
 - **STAT Operations**: 4,129 obj/s
 - **Latency**: < 4ms average response time (P50), 25ms (P99)
-- **Concurrency**: Handles 20+ concurrent connections efficiently
 
 ### 1MB Files
 - **Total Throughput**: 4,671 obj/s | 2.67 GB/s (mixed workload)
@@ -62,7 +59,6 @@ High-performance S3-compatible storage server written in Rust, optimized for spe
 - **DELETE Operations**: 467 obj/s
 - **STAT Operations**: 1,401 obj/s
 - **Latency**: < 15ms average response time (P50), 44ms (P99)
-- **Concurrency**: Handles 20+ concurrent connections efficiently
 
 ### 10MB Files
 - **Total Throughput**: 543 obj/s | 3.12 GB/s (mixed workload)
@@ -71,7 +67,6 @@ High-performance S3-compatible storage server written in Rust, optimized for spe
 - **DELETE Operations**: 54 obj/s
 - **STAT Operations**: 162 obj/s
 - **Latency**: < 50ms average response time (P50), 229ms (P99)
-- **Concurrency**: Handles 20+ concurrent connections efficiently
 
 </details>  
   
