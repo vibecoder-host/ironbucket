@@ -60,8 +60,18 @@ Benchmarked with MinIO warp on standard hardware (8 cores / 16GB ram):
   - GET Operations: 2,101 obj/s | 2003.69 MB/s
   - DELETE Operations: 467 obj/s
   - STAT Operations: 1,401 obj/s
-  - Latency: < 4ms average response time (P50), 44ms (P99)
+  - Latency: < 15ms average response time (P50), 44ms (P99)
   - Concurrency: Handles 20+ concurrent connections efficiently
+  
+  
+ 10MB files:
+  - Total Throughput: 543 obj/s | 3117.43 MB/s (mixed workload)
+  - PUT Operations: 82 obj/s | 782.53 MB/s
+  - GET Operations: 245 obj/s | 2334.90 MB/s
+  - DELETE Operations: 54 obj/s
+  - STAT Operations: 162 obj/s
+  - Latency: < 50ms average response time (P50), 229ms (P99)
+  - Concurrency: Handles 20+ concurrent connections efficiently  
   
 
 ## Quick Start
