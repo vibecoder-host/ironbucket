@@ -22,6 +22,7 @@ High-performance S3-compatible storage server written in Rust, optimized for spe
 
 Benchmarked with MinIO warp on standard hardware (8 cores / 16GB ram):
 
+Small files (1KB):
 - **Total Throughput**: 22,280 obj/s (mixed workload)
 - **PUT Operations**: 3,341 obj/s
 - **GET Operations**: 10,026 obj/s
@@ -29,6 +30,16 @@ Benchmarked with MinIO warp on standard hardware (8 cores / 16GB ram):
 - **STAT Operations**: 6,684 obj/s
 - **Latency**: < 3ms average response time
 - **Concurrency**: Handles 50+ concurrent connections efficiently
+
+Big files (1MB):
+- **Total Throughput**: 3,557 obj/s | 2.04 GB/s (mixed workload)
+- **PUT Operations**: 1,025 obj/s | 978 MB/s
+- **GET Operations**: 5,664 obj/s | 5.4 GB/s
+- **DELETE Operations**: 355 obj/s 
+- **STAT Operations**: 1,067 obj/s
+- **Latency**: < 50ms average response time (P50), 150ms (P99)
+- **Concurrency**: Handles 50+ concurrent connections efficiently
+
 
 ## Quick Start
 
