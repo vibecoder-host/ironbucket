@@ -3097,6 +3097,100 @@ async fn put_object(
 ) -> impl IntoResponse {
     info!("Uploading object: {}/{}", bucket, key);
 
+    // Check if this is a copy operation
+    if let Some(copy_source) = headers.get("x-amz-copy-source") {
+        let copy_source_str = copy_source.to_str().unwrap_or("");
+        info!("Detected copy operation from source: {}", copy_source_str);
+
+        // Parse the copy source (format: /bucket/key or bucket/key)
+        let source_path = if copy_source_str.starts_with('/') {
+            &copy_source_str[1..]
+        } else {
+            copy_source_str
+        };
+
+        let parts: Vec<&str> = source_path.splitn(2, '/').collect();
+        if parts.len() != 2 {
+            warn!("Invalid copy source format: {}", copy_source_str);
+            return Response::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .body(Body::from("InvalidArgument: Invalid copy source"))
+                .unwrap();
+        }
+
+        let source_bucket = parts[0];
+        let source_key = parts[1];
+
+        // URL decode the source key if needed
+        let decoded_source_key = urlencoding::decode(source_key)
+            .unwrap_or_else(|_| std::borrow::Cow::Borrowed(source_key))
+            .into_owned();
+
+        info!("Copying from bucket: {} key: {} to bucket: {} key: {}",
+              source_bucket, decoded_source_key, bucket, key);
+
+        // Read the source object
+        let source_path = state.storage_path.join(source_bucket).join(&decoded_source_key);
+
+        match fs::read(&source_path) {
+            Ok(source_data) => {
+                // Use the source data for the copy
+                let mut data = source_data;
+                let etag = format!("{:x}", md5::compute(&data));
+
+                // Continue with normal put operation using the copied data
+                let bucket_path = state.storage_path.join(&bucket);
+                if let Err(e) = fs::create_dir_all(&bucket_path) {
+                    warn!("Failed to create bucket directory: {}", e);
+                }
+
+                let object_path = bucket_path.join(&key);
+
+                // Create parent directory if needed
+                if let Some(parent) = object_path.parent() {
+                    if let Err(e) = fs::create_dir_all(parent) {
+                        warn!("Failed to create object parent directory: {}", e);
+                    }
+                }
+
+                // Write the copied data
+                if let Err(e) = fs::write(&object_path, &data) {
+                    warn!("Failed to write copied object: {}", e);
+                    return Response::builder()
+                        .status(StatusCode::INTERNAL_SERVER_ERROR)
+                        .body(Body::from("Failed to copy object"))
+                        .unwrap();
+                }
+
+                info!("Successfully copied object from {}/{} to {}/{}",
+                      source_bucket, decoded_source_key, bucket, key);
+
+                // Return success response with ETag
+                return Response::builder()
+                    .status(StatusCode::OK)
+                    .header(header::ETAG, format!("\"{}\"", etag))
+                    .header("x-amz-copy-source-version-id", "null")
+                    .body(Body::from(format!(
+                        r#"<?xml version="1.0" encoding="UTF-8"?>
+<CopyObjectResult>
+    <LastModified>{}</LastModified>
+    <ETag>"{}"</ETag>
+</CopyObjectResult>"#,
+                        Utc::now().to_rfc3339(),
+                        etag
+                    )))
+                    .unwrap();
+            }
+            Err(e) => {
+                warn!("Failed to read source object {}/{}: {}", source_bucket, decoded_source_key, e);
+                return Response::builder()
+                    .status(StatusCode::NOT_FOUND)
+                    .body(Body::from("NoSuchKey: The specified key does not exist"))
+                    .unwrap();
+            }
+        }
+    }
+
     // Check if this is chunked transfer encoding with signature
     let mut data = body.to_vec();
 
