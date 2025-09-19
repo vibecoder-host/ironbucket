@@ -1,6 +1,6 @@
 # IronBucket
 
-High-performance S3-compatible storage server written in Rust, optimized for speed and reliability.
+High-performance S3-compatible storage server written in Rust, optimized for speed and reliability. The primary goal is to maximize throughput and bandwidth for small files, achieving exceptional performance in high-concurrency scenarios.
 
 ## Features
 
@@ -34,7 +34,7 @@ High-performance S3-compatible storage server written in Rust, optimized for spe
 - **GET Operations**: 9,073 obj/s | 8.65 MB/s
 - **DELETE Operations**: 2,016 obj/s
 - **STAT Operations**: 5,127 obj/s
-- **Latency**: < 3ms average response time (P50), 8ms (P99)
+- **Latency**: < 3ms average response time (P50), 15ms (P99)
 
 ### 10KB Files
 - **Total Throughput**: 19,476 obj/s | 111.43 MB/s (mixed workload)
@@ -42,7 +42,7 @@ High-performance S3-compatible storage server written in Rust, optimized for spe
 - **GET Operations**: 8,764 obj/s | 83.58 MB/s
 - **DELETE Operations**: 1,947 obj/s
 - **STAT Operations**: 5,844 obj/s
-- **Latency**: < 3ms average response time (P50), 10ms (P99)
+- **Latency**: < 3ms average response time (P50), 18ms (P99)
 
 ### 100KB Files
 - **Total Throughput**: 14,296 obj/s | 818.28 MB/s (mixed workload)
@@ -58,7 +58,7 @@ High-performance S3-compatible storage server written in Rust, optimized for spe
 - **GET Operations**: 2,101 obj/s | 2.00 GB/s
 - **DELETE Operations**: 467 obj/s
 - **STAT Operations**: 1,401 obj/s
-- **Latency**: < 15ms average response time (P50), 44ms (P99)
+- **Latency**: < 8ms average response time (P50), 45ms (P99)
 
 ### 10MB Files
 - **Total Throughput**: 543 obj/s | 3.12 GB/s (mixed workload)
@@ -66,7 +66,7 @@ High-performance S3-compatible storage server written in Rust, optimized for spe
 - **GET Operations**: 245 obj/s | 2.33 GB/s
 - **DELETE Operations**: 54 obj/s
 - **STAT Operations**: 162 obj/s
-- **Latency**: < 50ms average response time (P50), 229ms (P99)
+- **Latency**: < 25ms average response time (P50), 220ms (P99)
 
 </details>  
   
