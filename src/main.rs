@@ -3279,9 +3279,20 @@ async fn put_object(
     // Write object to disk
     let object_path = bucket_path.join(&key);
 
-    // Handle folder creation (keys ending with /)
-    if key.ends_with('/') {
+    // Handle folder creation (keys ending with / or empty)
+    if key.ends_with('/') || key.is_empty() {
         // This is a folder creation request
+        // Special case: if the key is empty or just "/" it refers to the bucket itself
+        // which already exists after bucket creation, so just return success
+        if key == "/" || key.is_empty() {
+            info!("Bucket root folder already exists: {}", bucket);
+            return Response::builder()
+                .status(StatusCode::OK)
+                .header(header::ETAG, format!("\"{}\"", etag))
+                .body(Body::empty())
+                .unwrap();
+        }
+
         if let Err(e) = fs::create_dir_all(&object_path) {
             warn!("Failed to create folder: {}", e);
             return Response::builder()
