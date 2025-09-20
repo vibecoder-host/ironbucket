@@ -49,6 +49,9 @@ This document tracks all pending tasks, improvements, and features to be impleme
   - ✅ Generate unique version IDs
   - ✅ Store versioned objects separately
   - ✅ Return version ID in response headers
+  - ⬜ Handle deletion markers, when versioning is enabled, and a file is deleted, we have to create a deletion marker (whenever you send a DeleteObject request on an object in a versioning-enabled or suspended bucket. The object specified in the DELETE request is not actually deleted. Instead, the delete marker becomes the current version of the object. The object's key name (or key) becomes the key of the delete marker. When you get an object without specifying a versionId in your request, if its current version is a delete marker, Amazon S3 responds with the following: A 404 (Not Found) error, A response header, x-amz-delete-marker: true
+When you get an object by specifying a versionId in your request, if the specified version is a delete marker, Amazon S3 responds with the following: A 405 (Method Not Allowed) error, A response header, x-amz-delete-marker: true, A response header, Last-Modified: timestamp (only when using the HeadObject or GetObject API operations)
+The x-amz-delete-marker: true response header tells you that the object accessed was a delete marker. This response header never returns false, because when the value is false, the current or specified version of the object is not a delete marker. The Last-Modified response header provides the creation time of the delete markers.)
 
 ---
 
