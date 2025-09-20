@@ -1,27 +1,33 @@
 # IronBucket
+High-performance S3-compatible storage server written in Rust, optimized for speed and reliability.
 
-High-performance S3-compatible storage server written in Rust, optimized for speed and reliability. The primary goal is to maximize throughput and bandwidth for small files, achieving exceptional performance in high-concurrency scenarios.
+<div align="left">
+
+<img src="ironbucket-icon.jpg" alt="IronBucket Logo" width="300" />
+
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
+
+</div>
 
 ## Features
 
-- **Full S3 API Compatibility**: Complete implementation of core S3 operations
+- **S3 API Compatibility**: Complete implementation of core S3 operations
   - Bucket operations: Create, Delete, List, Head
   - Object operations: PUT, GET, DELETE, HEAD
   - Multipart uploads: Initiate, Upload Parts, Complete, Abort
   - Query operations: Versioning, ACL, Location, Batch Delete
-- **Exceptional Performance**: 20,000+ operations per second
+- **AWS Signature V4**: Complete authentication implementation
 - **Chunked Transfer Encoding**: Full support for AWS chunked transfers with signatures
 - **Async I/O**: Built on Tokio and Axum for maximum concurrency
 - **Disk Persistence**: Reliable filesystem-based storage
-- **Redis Integration**: Optional caching layer for enhanced performance
-- **AWS Signature V4**: Complete authentication implementation
 - **CORS Support**: Full cross-origin resource sharing support
 - **Zero-Copy Operations**: Efficient memory usage for large files
+- **Exceptional Performance**: 20,000+ operations per second
 
 ## Performance Metrics
 
 <details>
-<summary><b>📊 View Benchmark Results</b> (MinIO warp, 8 cores / 16GB RAM)</summary>
+<summary><b>📊 View Benchmark Results</b> (Tool: MinIO Warp, Server: 8 cores / 16GB RAM)</summary>
 
 ```bash
 ./warp mixed --host=172.17.0.1:20000 --access-key=XXX --secret-key=XXX \

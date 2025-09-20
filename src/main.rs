@@ -2127,12 +2127,46 @@ async fn handle_object_get(
                 for entry in entries.flatten() {
                     if let Ok(metadata) = entry.metadata() {
                         if metadata.is_file() {
-                            let version_id = entry.file_name().to_string_lossy().to_string();
-                            let last_modified = metadata.modified()
-                                .ok()
-                                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                                .map(|d| Utc.timestamp_opt(d.as_secs() as i64, d.subsec_nanos()).unwrap())
-                                .unwrap_or_else(Utc::now);
+                            let file_name = entry.file_name().to_string_lossy().to_string();
+
+                            // Skip metadata files
+                            if file_name.ends_with(".metadata") {
+                                continue;
+                            }
+
+                            let version_id = file_name.clone();
+
+                            // Try to read last_modified from version metadata file
+                            let version_metadata_path = versions_dir.join(format!("{}.metadata", &file_name));
+                            let last_modified = if version_metadata_path.exists() {
+                                if let Ok(metadata_str) = fs::read_to_string(&version_metadata_path) {
+                                    if let Ok(obj_metadata) = serde_json::from_str::<ObjectMetadata>(&metadata_str) {
+                                        obj_metadata.last_modified
+                                    } else {
+                                        // Fallback to file system time if metadata parsing fails
+                                        metadata.modified()
+                                            .ok()
+                                            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                                            .map(|d| Utc.timestamp_opt(d.as_secs() as i64, d.subsec_nanos()).unwrap())
+                                            .unwrap_or_else(Utc::now)
+                                    }
+                                } else {
+                                    // Fallback to file system time if metadata file can't be read
+                                    metadata.modified()
+                                        .ok()
+                                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                                        .map(|d| Utc.timestamp_opt(d.as_secs() as i64, d.subsec_nanos()).unwrap())
+                                        .unwrap_or_else(Utc::now)
+                                }
+                            } else {
+                                // Use file system time if no metadata file exists
+                                metadata.modified()
+                                    .ok()
+                                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                                    .map(|d| Utc.timestamp_opt(d.as_secs() as i64, d.subsec_nanos()).unwrap())
+                                    .unwrap_or_else(Utc::now)
+                            };
+
                             let size = metadata.len();
 
                             versions.push((version_id, last_modified, size));
@@ -2224,7 +2258,7 @@ async fn handle_object_get(
     }
 
     // Default: get object
-    get_object(State(state), Path((bucket, key))).await.into_response()
+    get_object(State(state), Path((bucket, key)), params.version_id).await.into_response()
 }
 
 // Handle object PUT with query parameters
@@ -2512,7 +2546,8 @@ async fn handle_object_delete(
     Path((bucket, key)): Path<(String, String)>,
     Query(params): Query<ObjectQueryParams>,
 ) -> impl IntoResponse {
-    debug!("DELETE object: {}/{} with params: {:?}", bucket, key, params);
+    info!("DELETE object: {}/{} with params: {:?}", bucket, key, params);
+    info!("version_id specifically: {:?}", params.version_id);
 
     if let Some(upload_id) = &params.upload_id {
         // Abort multipart upload
@@ -2534,6 +2569,46 @@ async fn handle_object_delete(
             return StatusCode::NO_CONTENT.into_response();
         }
         return StatusCode::NOT_FOUND.into_response();
+    }
+
+    // Check if deleting a specific version
+    if let Some(version_id) = &params.version_id {
+        info!("Attempting to delete version {} of object {}/{}", version_id, bucket, key);
+        if version_id != "null" {
+            // Delete the specific version file
+            let version_path = state.storage_path.join(&bucket).join(".versions").join(&key).join(version_id);
+            let version_metadata_path = state.storage_path.join(&bucket).join(".versions").join(&key).join(format!("{}.metadata", version_id));
+
+            info!("Version path: {:?}, exists: {}", version_path, version_path.exists());
+            info!("Version metadata path: {:?}, exists: {}", version_metadata_path, version_metadata_path.exists());
+
+            if version_path.exists() {
+                // Delete version file
+                if let Err(e) = fs::remove_file(&version_path) {
+                    warn!("Failed to delete version file: {}", e);
+                    return Response::builder()
+                        .status(StatusCode::INTERNAL_SERVER_ERROR)
+                        .body(Body::from("Failed to delete version"))
+                        .unwrap();
+                }
+
+                // Delete version metadata file if it exists
+                if version_metadata_path.exists() {
+                    if let Err(e) = fs::remove_file(&version_metadata_path) {
+                        warn!("Failed to delete version metadata: {}", e);
+                    }
+                }
+
+                info!("Deleted version {} of object {}/{}", version_id, bucket, key);
+                return StatusCode::NO_CONTENT.into_response();
+            } else {
+                // Version not found
+                return Response::builder()
+                    .status(StatusCode::NOT_FOUND)
+                    .body(Body::from("Version not found"))
+                    .unwrap();
+            }
+        }
     }
 
     // Default: delete object
@@ -3253,14 +3328,23 @@ async fn put_object(
         let copy_source_str = copy_source.to_str().unwrap_or("");
         info!("Detected copy operation from source: {}", copy_source_str);
 
-        // Parse the copy source (format: /bucket/key or bucket/key)
+        // Parse the copy source (format: /bucket/key?versionId=xxx or bucket/key?versionId=xxx)
         let source_path = if copy_source_str.starts_with('/') {
             &copy_source_str[1..]
         } else {
             copy_source_str
         };
 
-        let parts: Vec<&str> = source_path.splitn(2, '/').collect();
+        // Check for versionId parameter
+        let (base_path, version_id) = if let Some(pos) = source_path.find("?versionId=") {
+            let (base, query) = source_path.split_at(pos);
+            let vid = &query[11..]; // Skip "?versionId="
+            (base, Some(vid.to_string()))
+        } else {
+            (source_path, None)
+        };
+
+        let parts: Vec<&str> = base_path.splitn(2, '/').collect();
         if parts.len() != 2 {
             warn!("Invalid copy source format: {}", copy_source_str);
             return Response::builder()
@@ -3277,12 +3361,29 @@ async fn put_object(
             .unwrap_or_else(|_| std::borrow::Cow::Borrowed(source_key))
             .into_owned();
 
-        info!("Copying from bucket: {} key: {} to bucket: {} key: {}",
-              source_bucket, decoded_source_key, bucket, key);
+        info!("Copying from bucket: {} key: {} version: {:?} to bucket: {} key: {}",
+              source_bucket, decoded_source_key, version_id, bucket, key);
 
-        // Read the source object
-        let source_path = state.storage_path.join(source_bucket).join(&decoded_source_key);
-        let source_metadata_path = state.storage_path.join(source_bucket).join(format!("{}.metadata", &decoded_source_key));
+        // Read the source object (with version support)
+        let source_path = if let Some(ref vid) = version_id {
+            if vid != "null" {
+                state.storage_path.join(source_bucket).join(".versions").join(&decoded_source_key).join(vid)
+            } else {
+                state.storage_path.join(source_bucket).join(&decoded_source_key)
+            }
+        } else {
+            state.storage_path.join(source_bucket).join(&decoded_source_key)
+        };
+
+        let source_metadata_path = if let Some(ref vid) = version_id {
+            if vid != "null" {
+                state.storage_path.join(source_bucket).join(".versions").join(&decoded_source_key).join(format!("{}.metadata", vid))
+            } else {
+                state.storage_path.join(source_bucket).join(format!("{}.metadata", &decoded_source_key))
+            }
+        } else {
+            state.storage_path.join(source_bucket).join(format!("{}.metadata", &decoded_source_key))
+        };
 
         match fs::read(&source_path) {
             Ok(source_data) => {
@@ -3548,6 +3649,51 @@ async fn put_object(
                 warn!("Failed to write versioned object: {}", e);
             }
 
+            // Save metadata for this version
+            let version_metadata_path = versions_dir.join(format!("{}.metadata", &vid));
+
+            // Get content type from headers
+            let version_content_type = headers
+                .get(header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("application/octet-stream")
+                .to_string();
+
+            // Extract custom metadata for this version
+            let mut version_custom_metadata = HashMap::new();
+            for (name, value) in &headers {
+                let key_str = name.as_str();
+                if key_str.starts_with("x-amz-meta-") {
+                    if let Ok(value_str) = value.to_str() {
+                        let meta_key = key_str.strip_prefix("x-amz-meta-").unwrap();
+                        version_custom_metadata.insert(meta_key.to_string(), value_str.to_string());
+                    }
+                }
+            }
+
+            // Note: For now, we'll save version metadata without encryption info
+            // The version data is saved unencrypted in the current implementation
+            // TODO: Consider encrypting version data if bucket has encryption enabled
+            let version_metadata = ObjectMetadata {
+                key: key.clone(),
+                size: data.len() as u64,
+                etag: etag.clone(),
+                last_modified: Utc::now(),
+                content_type: version_content_type,
+                storage_class: "STANDARD".to_string(),
+                metadata: version_custom_metadata,
+                version_id: Some(vid.clone()),
+                encryption: None, // Versions are not encrypted in current implementation
+            };
+
+            if let Ok(metadata_json) = serde_json::to_string(&version_metadata) {
+                if let Err(e) = fs::write(&version_metadata_path, metadata_json) {
+                    warn!("Failed to write version metadata: {}", e);
+                } else {
+                    debug!("Version metadata saved to: {:?}", version_metadata_path);
+                }
+            }
+
             // Mark all existing versions as not latest
             let versions = bucket_data.versions.entry(key.clone()).or_insert_with(Vec::new);
             for v in versions.iter_mut() {
@@ -3677,11 +3823,23 @@ async fn put_object(
 async fn get_object(
     State(state): State<AppState>,
     Path((bucket, key)): Path<(String, String)>,
+    version_id: Option<String>,
 ) -> impl IntoResponse {
-    debug!("Getting object: {}/{}", bucket, key);
+    debug!("Getting object: {}/{} version: {:?}", bucket, key, version_id);
 
-    // Read object from disk
-    let object_path = state.storage_path.join(&bucket).join(&key);
+    // Determine which file to read based on version_id
+    let object_path = if let Some(ref vid) = version_id {
+        if vid != "null" {
+            // Read from version directory
+            state.storage_path.join(&bucket).join(".versions").join(&key).join(vid)
+        } else {
+            // "null" means current version
+            state.storage_path.join(&bucket).join(&key)
+        }
+    } else {
+        // No version specified, read current
+        state.storage_path.join(&bucket).join(&key)
+    };
 
     // First check if file exists on disk
     let data = match fs::read(&object_path) {
@@ -3696,7 +3854,17 @@ async fn get_object(
     };
 
     // Try to read metadata from file
-    let metadata_path = state.storage_path.join(&bucket).join(format!("{}.metadata", key));
+    let metadata_path = if let Some(ref vid) = version_id {
+        if vid != "null" {
+            // Read metadata from version directory
+            state.storage_path.join(&bucket).join(".versions").join(&key).join(format!("{}.metadata", vid))
+        } else {
+            // Current version metadata
+            state.storage_path.join(&bucket).join(format!("{}.metadata", key))
+        }
+    } else {
+        state.storage_path.join(&bucket).join(format!("{}.metadata", key))
+    };
     let (data_to_return, etag, last_modified, content_type, encryption_header, custom_metadata) = if let Ok(metadata_json) = fs::read_to_string(&metadata_path) {
         if let Ok(metadata) = serde_json::from_str::<ObjectMetadata>(&metadata_json) {
             // Check if object is encrypted and decrypt if necessary

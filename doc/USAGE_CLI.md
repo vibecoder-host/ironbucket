@@ -42,7 +42,7 @@ sudo ./aws/install
 # Set your IronBucket credentials
 export IRONBUCKET_ACCESS_KEY="your-access-key"
 export IRONBUCKET_SECRET_KEY="your-secret-key"
-export IRONBUCKET_ENDPOINT="http://localhost:9000"
+export IRONBUCKET_ENDPOINT="http://172.17.0.1:20000"
 
 # Configure AWS CLI to use these credentials
 export AWS_ACCESS_KEY_ID="${IRONBUCKET_ACCESS_KEY}"
@@ -72,7 +72,7 @@ Edit `~/.aws/config`:
 ```ini
 [profile ironbucket]
 region = us-east-1
-endpoint_url = http://localhost:9000
+endpoint_url = http://172.17.0.1:20000
 ```
 
 Edit `~/.aws/credentials`:
