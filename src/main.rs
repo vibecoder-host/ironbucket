@@ -400,6 +400,7 @@ struct ObjectMetadata {
     metadata: HashMap<String, String>,
     version_id: Option<String>,
     encryption: Option<ObjectEncryption>,
+    tags: Option<HashMap<String, String>>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -2038,6 +2039,7 @@ struct ObjectQueryParams {
     versions: Option<String>,
     #[serde(rename = "versionId")]
     version_id: Option<String>,
+    tagging: Option<String>,
 }
 
 // Handle object GET with query parameters
@@ -2070,6 +2072,53 @@ async fn handle_object_get(
             .status(StatusCode::OK)
             .header(header::CONTENT_TYPE, "application/xml")
             .body(Body::from(acl_xml))
+            .unwrap();
+    }
+
+    if params.tagging.is_some() {
+        // Return object tags from metadata
+        let metadata_path = state.storage_path.join(&bucket).join(format!("{}.metadata", key));
+
+        let tags_xml = if metadata_path.exists() {
+            // Read metadata file
+            match fs::read_to_string(&metadata_path) {
+                Ok(content) => {
+                    match serde_json::from_str::<ObjectMetadata>(&content) {
+                        Ok(metadata) => {
+                            // Build XML from tags
+                            let mut xml = String::from(r#"<?xml version="1.0" encoding="UTF-8"?><Tagging><TagSet>"#);
+
+                            if let Some(tags) = &metadata.tags {
+                                for (key, value) in tags {
+                                    xml.push_str(&format!("<Tag><Key>{}</Key><Value>{}</Value></Tag>", key, value));
+                                }
+                            }
+
+                            xml.push_str("</TagSet></Tagging>");
+                            xml
+                        }
+                        Err(e) => {
+                            warn!("Failed to parse metadata file: {}", e);
+                            // Return empty tags on parse error
+                            r#"<?xml version="1.0" encoding="UTF-8"?><Tagging><TagSet/></Tagging>"#.to_string()
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!("Failed to read metadata file: {}", e);
+                    // Return empty tags if metadata doesn't exist
+                    r#"<?xml version="1.0" encoding="UTF-8"?><Tagging><TagSet/></Tagging>"#.to_string()
+                }
+            }
+        } else {
+            // No metadata found, return empty tag set
+            r#"<?xml version="1.0" encoding="UTF-8"?><Tagging><TagSet/></Tagging>"#.to_string()
+        };
+
+        return Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, "application/xml")
+            .body(Body::from(tags_xml))
             .unwrap();
     }
 
@@ -2279,6 +2328,100 @@ async fn handle_object_put(
             .unwrap();
     }
 
+    if params.tagging.is_some() {
+        // Handle object tagging
+        info!("Setting tags for object: {}/{}", bucket, key);
+
+        // Parse the XML body to extract tags
+        let xml_str = String::from_utf8_lossy(&body);
+
+        // Parse XML to extract tags into a HashMap
+        let mut tags_map = HashMap::new();
+
+        // Simple XML parsing for tags
+        let tag_start = "<Tag>";
+        let tag_end = "</Tag>";
+        let key_start = "<Key>";
+        let key_end = "</Key>";
+        let value_start = "<Value>";
+        let value_end = "</Value>";
+
+        let mut pos = 0;
+        while let Some(tag_pos) = xml_str[pos..].find(tag_start) {
+            let tag_start_pos = pos + tag_pos + tag_start.len();
+            if let Some(tag_end_pos) = xml_str[tag_start_pos..].find(tag_end) {
+                let tag_content = &xml_str[tag_start_pos..tag_start_pos + tag_end_pos];
+
+                // Extract key and value from tag content
+                if let (Some(key_s), Some(key_e)) = (tag_content.find(key_start), tag_content.find(key_end)) {
+                    if let (Some(val_s), Some(val_e)) = (tag_content.find(value_start), tag_content.find(value_end)) {
+                        let key = &tag_content[key_s + key_start.len()..key_e];
+                        let value = &tag_content[val_s + value_start.len()..val_e];
+                        tags_map.insert(key.to_string(), value.to_string());
+                    }
+                }
+
+                pos = tag_start_pos + tag_end_pos + tag_end.len();
+            } else {
+                break;
+            }
+        }
+
+        // Read existing metadata
+        let metadata_path = state.storage_path.join(&bucket).join(format!("{}.metadata", key));
+
+        let mut metadata = if metadata_path.exists() {
+            // Read existing metadata
+            match fs::read_to_string(&metadata_path) {
+                Ok(content) => {
+                    match serde_json::from_str::<ObjectMetadata>(&content) {
+                        Ok(mut md) => {
+                            // Update tags
+                            md.tags = if tags_map.is_empty() { None } else { Some(tags_map) };
+                            md
+                        }
+                        Err(e) => {
+                            warn!("Failed to parse metadata file: {}", e);
+                            return Response::builder()
+                                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                                .body(Body::from("Failed to parse metadata"))
+                                .unwrap();
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!("Failed to read metadata file: {}", e);
+                    return Response::builder()
+                        .status(StatusCode::NOT_FOUND)
+                        .body(Body::from("Object not found"))
+                        .unwrap();
+                }
+            }
+        } else {
+            return Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .body(Body::from("Object not found"))
+                .unwrap();
+        };
+
+        // Write updated metadata
+        if let Err(e) = fs::write(&metadata_path, serde_json::to_string(&metadata).unwrap()) {
+            warn!("Failed to write metadata file: {}", e);
+            return Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .body(Body::from("Failed to save tags"))
+                .unwrap();
+        }
+
+        info!("Tags saved successfully for {}/{}", bucket, key);
+
+        // Return success without modifying the actual object
+        return Response::builder()
+            .status(StatusCode::OK)
+            .body(Body::empty())
+            .unwrap();
+    }
+
     if let (Some(upload_id), Some(part_number)) = (&params.upload_id, params.part_number) {
         // Upload part for multipart upload
         let mut data = body.to_vec();
@@ -2476,6 +2619,7 @@ async fn handle_object_post(
                 metadata: HashMap::new(),
                 version_id: None,
                 encryption: None, // TODO: Add encryption support for multipart
+                tags: None,
             };
 
             if let Ok(metadata_json) = serde_json::to_string(&metadata) {
@@ -2548,6 +2692,55 @@ async fn handle_object_delete(
 ) -> impl IntoResponse {
     info!("DELETE object: {}/{} with params: {:?}", bucket, key, params);
     info!("version_id specifically: {:?}", params.version_id);
+
+    if params.tagging.is_some() {
+        // Delete object tags from metadata
+        let metadata_path = state.storage_path.join(&bucket).join(format!("{}.metadata", key));
+
+        if metadata_path.exists() {
+            // Read existing metadata
+            match fs::read_to_string(&metadata_path) {
+                Ok(content) => {
+                    match serde_json::from_str::<ObjectMetadata>(&content) {
+                        Ok(mut metadata) => {
+                            // Remove tags
+                            metadata.tags = None;
+
+                            // Write updated metadata
+                            if let Err(e) = fs::write(&metadata_path, serde_json::to_string(&metadata).unwrap()) {
+                                warn!("Failed to write metadata file: {}", e);
+                                return Response::builder()
+                                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                                    .body(Body::from("Failed to delete tags"))
+                                    .unwrap();
+                            }
+
+                            info!("Tags deleted for object: {}/{}", bucket, key);
+                        }
+                        Err(e) => {
+                            warn!("Failed to parse metadata file: {}", e);
+                            return Response::builder()
+                                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                                .body(Body::from("Failed to parse metadata"))
+                                .unwrap();
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!("Failed to read metadata file: {}", e);
+                    return Response::builder()
+                        .status(StatusCode::INTERNAL_SERVER_ERROR)
+                        .body(Body::from("Failed to read metadata"))
+                        .unwrap();
+                }
+            }
+        }
+
+        return Response::builder()
+            .status(StatusCode::NO_CONTENT)
+            .body(Body::empty())
+            .unwrap();
+    }
 
     if let Some(upload_id) = &params.upload_id {
         // Abort multipart upload
@@ -3502,6 +3695,7 @@ async fn put_object(
                         metadata: custom_metadata, // Use the extracted custom metadata
                         version_id: None,
                         encryption: None,
+                        tags: None,
                     };
 
                     if let Ok(metadata_json) = serde_json::to_string(&metadata) {
@@ -3684,6 +3878,7 @@ async fn put_object(
                 metadata: version_custom_metadata,
                 version_id: Some(vid.clone()),
                 encryption: None, // Versions are not encrypted in current implementation
+                tags: None, // TODO: Copy tags from current version if they exist
             };
 
             if let Ok(metadata_json) = serde_json::to_string(&version_metadata) {
@@ -3793,6 +3988,7 @@ async fn put_object(
         metadata: HashMap::new(),
         version_id: version_id.clone(),
         encryption: object_encryption,
+        tags: None,
     };
 
     if let Ok(metadata_json) = serde_json::to_string(&metadata) {
