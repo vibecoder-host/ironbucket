@@ -2035,6 +2035,9 @@ struct ObjectQueryParams {
     #[serde(rename = "partNumber")]
     part_number: Option<i32>,
     acl: Option<String>,
+    versions: Option<String>,
+    #[serde(rename = "versionId")]
+    version_id: Option<String>,
 }
 
 // Handle object GET with query parameters
@@ -2067,6 +2070,118 @@ async fn handle_object_get(
             .status(StatusCode::OK)
             .header(header::CONTENT_TYPE, "application/xml")
             .body(Body::from(acl_xml))
+            .unwrap();
+    }
+
+    // Handle versions query parameter - list all versions of an object
+    if params.versions.is_some() {
+        let versions_dir = state.storage_path.join(&bucket).join(".versions").join(&key);
+
+        let mut xml = format!(r#"<?xml version="1.0" encoding="UTF-8"?>
+<ListVersionsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+    <Name>{}</Name>
+    <Prefix>{}</Prefix>
+    <KeyMarker></KeyMarker>
+    <VersionIdMarker></VersionIdMarker>
+    <MaxKeys>1000</MaxKeys>
+    <IsTruncated>false</IsTruncated>"#, bucket, key);
+
+        // Get current version info
+        let object_path = state.storage_path.join(&bucket).join(&key);
+        if object_path.exists() {
+            let metadata = fs::metadata(&object_path).unwrap();
+            let size = metadata.len();
+            let last_modified = metadata.modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| Utc.timestamp_opt(d.as_secs() as i64, d.subsec_nanos()).unwrap())
+                .unwrap_or_else(Utc::now);
+
+            // Add current version (latest)
+            xml.push_str(&format!(r#"
+    <Version>
+        <Key>{}</Key>
+        <VersionId>null</VersionId>
+        <IsLatest>true</IsLatest>
+        <LastModified>{}</LastModified>
+        <ETag>"{}"</ETag>
+        <Size>{}</Size>
+        <StorageClass>STANDARD</StorageClass>
+        <Owner>
+            <ID>ironbucket</ID>
+            <DisplayName>IronBucket</DisplayName>
+        </Owner>
+    </Version>"#,
+                key,
+                last_modified.to_rfc3339(),
+                format!("{:x}", md5::compute(fs::read(&object_path).unwrap_or_default())),
+                size
+            ));
+        }
+
+        // List versions from .versions directory
+        if versions_dir.exists() && versions_dir.is_dir() {
+            if let Ok(entries) = fs::read_dir(&versions_dir) {
+                let mut versions: Vec<(String, DateTime<Utc>, u64)> = Vec::new();
+
+                for entry in entries.flatten() {
+                    if let Ok(metadata) = entry.metadata() {
+                        if metadata.is_file() {
+                            let version_id = entry.file_name().to_string_lossy().to_string();
+                            let last_modified = metadata.modified()
+                                .ok()
+                                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                                .map(|d| Utc.timestamp_opt(d.as_secs() as i64, d.subsec_nanos()).unwrap())
+                                .unwrap_or_else(Utc::now);
+                            let size = metadata.len();
+
+                            versions.push((version_id, last_modified, size));
+                        }
+                    }
+                }
+
+                // Sort versions by date (newest first)
+                versions.sort_by(|a, b| b.1.cmp(&a.1));
+
+                // Add each version to XML
+                for (version_id, last_modified, size) in versions {
+                    let version_path = versions_dir.join(&version_id);
+                    let etag = if let Ok(data) = fs::read(&version_path) {
+                        format!("{:x}", md5::compute(&data))
+                    } else {
+                        "unknown".to_string()
+                    };
+
+                    xml.push_str(&format!(r#"
+    <Version>
+        <Key>{}</Key>
+        <VersionId>{}</VersionId>
+        <IsLatest>false</IsLatest>
+        <LastModified>{}</LastModified>
+        <ETag>"{}"</ETag>
+        <Size>{}</Size>
+        <StorageClass>STANDARD</StorageClass>
+        <Owner>
+            <ID>ironbucket</ID>
+            <DisplayName>IronBucket</DisplayName>
+        </Owner>
+    </Version>"#,
+                        key,
+                        version_id,
+                        last_modified.to_rfc3339(),
+                        etag,
+                        size
+                    ));
+                }
+            }
+        }
+
+        xml.push_str("\n</ListVersionsResult>");
+
+        return Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, "application/xml")
+            .body(Body::from(xml))
             .unwrap();
     }
 
@@ -2202,6 +2317,7 @@ async fn handle_object_post(
     State(state): State<AppState>,
     Path((bucket, key)): Path<(String, String)>,
     Query(params): Query<ObjectQueryParams>,
+    headers: HeaderMap,
     _body: Bytes,
 ) -> impl IntoResponse {
     debug!("POST object: {}/{} with params: {:?}", bucket, key, params);
@@ -2209,6 +2325,13 @@ async fn handle_object_post(
     if params.uploads.is_some() {
         // Initiate multipart upload
         let upload_id = Uuid::new_v4().to_string();
+
+        // Extract Content-Type from headers for multipart upload
+        let content_type = headers
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("application/octet-stream")
+            .to_string();
 
         let initiated = Utc::now();
         let upload = MultipartUpload {
@@ -2233,6 +2356,7 @@ async fn handle_object_post(
             "bucket": bucket,
             "key": key,
             "initiated": initiated.to_rfc3339(),
+            "content_type": content_type,
         });
 
         if let Err(e) = fs::write(&upload_meta_path, upload_metadata.to_string()) {
@@ -2259,6 +2383,23 @@ async fn handle_object_post(
         // Complete multipart upload
         let mut uploads = state.multipart_uploads.lock().unwrap();
         if let Some(upload) = uploads.remove(upload_id) {
+            // Read the stored content type from upload metadata
+            let multipart_dir = state.storage_path.join(&bucket).join(".multipart");
+            let upload_meta_path = multipart_dir.join(format!("{}.upload", upload_id));
+
+            let stored_content_type = if let Ok(metadata_str) = fs::read_to_string(&upload_meta_path) {
+                if let Ok(metadata_json) = serde_json::from_str::<serde_json::Value>(&metadata_str) {
+                    metadata_json.get("content_type")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("application/octet-stream")
+                        .to_string()
+                } else {
+                    "application/octet-stream".to_string()
+                }
+            } else {
+                "application/octet-stream".to_string()
+            };
+
             // Combine all parts
             let mut combined_data = Vec::new();
             let mut parts: Vec<_> = upload.parts.into_iter().collect();
@@ -2296,7 +2437,7 @@ async fn handle_object_post(
                 size: combined_data.len() as u64,
                 etag: etag.clone(),
                 last_modified: Utc::now(),
-                content_type: "binary/octet-stream".to_string(), // Default for multipart
+                content_type: stored_content_type, // Use the content type from initiation
                 storage_class: "STANDARD".to_string(),
                 metadata: HashMap::new(),
                 version_id: None,
@@ -3174,6 +3315,25 @@ async fn put_object(
                         .unwrap();
                 }
 
+                // Check for metadata directive
+                let metadata_directive = headers
+                    .get("x-amz-metadata-directive")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("COPY");
+
+                // Extract custom metadata from headers
+                let mut custom_metadata = HashMap::new();
+                for (name, value) in &headers {
+                    let key_str = name.as_str();
+                    if key_str.starts_with("x-amz-meta-") {
+                        if let Ok(value_str) = value.to_str() {
+                            let meta_key = key_str.strip_prefix("x-amz-meta-").unwrap();
+                            custom_metadata.insert(meta_key.to_string(), value_str.to_string());
+                            debug!("Found custom metadata: {} = {}", meta_key, value_str);
+                        }
+                    }
+                }
+
                 // Copy metadata file if it exists, or create new metadata
                 let content_type = if source_metadata_path.exists() {
                     // Read and copy the metadata, updating the key
@@ -3184,6 +3344,25 @@ async fn put_object(
                                 metadata.key = key.clone();
                                 metadata.last_modified = Utc::now();
                                 metadata.etag = etag.clone();
+
+                                // Handle metadata directive
+                                if metadata_directive == "REPLACE" {
+                                    // Replace all custom metadata with new ones
+                                    metadata.metadata = custom_metadata.clone();
+                                    info!("REPLACE directive: replacing metadata with {:?}", custom_metadata);
+                                } else {
+                                    // COPY directive: merge new metadata with existing
+                                    for (k, v) in custom_metadata.iter() {
+                                        metadata.metadata.insert(k.clone(), v.clone());
+                                    }
+                                }
+
+                                // Update content-type if provided
+                                if let Some(content_type_header) = headers.get(header::CONTENT_TYPE) {
+                                    if let Ok(ct) = content_type_header.to_str() {
+                                        metadata.content_type = ct.to_string();
+                                    }
+                                }
 
                                 let ct = metadata.content_type.clone();
 
@@ -3207,14 +3386,19 @@ async fn put_object(
                     }
                 } else {
                     // No metadata file exists, create basic metadata
+                    let content_type_header = headers.get(header::CONTENT_TYPE)
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("application/octet-stream")
+                        .to_string();
+
                     let metadata = ObjectMetadata {
                         key: key.clone(),
                         size: data.len() as u64,
                         etag: etag.clone(),
                         last_modified: Utc::now(),
-                        content_type: "application/octet-stream".to_string(),
+                        content_type: content_type_header.clone(),
                         storage_class: "STANDARD".to_string(),
-                        metadata: HashMap::new(),
+                        metadata: custom_metadata, // Use the extracted custom metadata
                         version_id: None,
                         encryption: None,
                     };
@@ -3224,7 +3408,7 @@ async fn put_object(
                             warn!("Failed to write metadata: {}", e);
                         }
                     }
-                    "application/octet-stream".to_string()
+                    content_type_header
                 };
 
                 info!("Successfully copied object from {}/{} to {}/{} with content-type: {}",
@@ -3513,7 +3697,7 @@ async fn get_object(
 
     // Try to read metadata from file
     let metadata_path = state.storage_path.join(&bucket).join(format!("{}.metadata", key));
-    let (data_to_return, etag, last_modified, content_type, encryption_header) = if let Ok(metadata_json) = fs::read_to_string(&metadata_path) {
+    let (data_to_return, etag, last_modified, content_type, encryption_header, custom_metadata) = if let Ok(metadata_json) = fs::read_to_string(&metadata_path) {
         if let Ok(metadata) = serde_json::from_str::<ObjectMetadata>(&metadata_json) {
             // Check if object is encrypted and decrypt if necessary
             let (final_data, enc_header) = if let Some(encryption) = &metadata.encryption {
@@ -3539,11 +3723,11 @@ async fn get_object(
             } else {
                 (data.clone(), None)
             };
-            (final_data, metadata.etag, metadata.last_modified, metadata.content_type, enc_header)
+            (final_data, metadata.etag, metadata.last_modified, metadata.content_type, enc_header, metadata.metadata)
         } else {
             // Metadata file exists but couldn't parse, fall back to defaults
             let etag = format!("{:x}", md5::compute(&data));
-            (data.clone(), etag, Utc::now(), "application/octet-stream".to_string(), None)
+            (data.clone(), etag, Utc::now(), "application/octet-stream".to_string(), None, HashMap::new())
         }
     } else {
         // No metadata file, check in-memory storage or calculate
@@ -3561,7 +3745,7 @@ async fn get_object(
             let etag = format!("{:x}", md5::compute(&data));
             (etag, Utc::now())
         };
-        (data.clone(), etag, last_modified, "application/octet-stream".to_string(), None)
+        (data.clone(), etag, last_modified, "application/octet-stream".to_string(), None, HashMap::new())
     };
 
     let mut response = Response::builder()
@@ -3570,6 +3754,12 @@ async fn get_object(
         .header(header::CONTENT_LENGTH, data_to_return.len().to_string())
         .header(header::ETAG, format!("\"{}\"", etag))
         .header(header::LAST_MODIFIED, format_http_date(&last_modified));
+
+    // Add custom metadata headers
+    for (key, value) in custom_metadata {
+        let header_name = format!("x-amz-meta-{}", key);
+        response = response.header(header_name, value);
+    }
 
     // Add encryption header if object was encrypted
     if let Some(enc_algorithm) = encryption_header {
@@ -3657,16 +3847,16 @@ async fn head_object(
 
     // Try to read metadata from file first
     let metadata_path = state.storage_path.join(&bucket).join(format!("{}.metadata", key));
-    let (size, etag, last_modified, content_type) = if let Ok(metadata_json) = fs::read_to_string(&metadata_path) {
+    let (size, etag, last_modified, content_type, custom_metadata) = if let Ok(metadata_json) = fs::read_to_string(&metadata_path) {
         if let Ok(metadata) = serde_json::from_str::<ObjectMetadata>(&metadata_json) {
-            (metadata.size, metadata.etag, metadata.last_modified, metadata.content_type)
+            (metadata.size, metadata.etag, metadata.last_modified, metadata.content_type, metadata.metadata)
         } else {
             // Metadata file exists but couldn't parse, fall back to file stats
             let file_metadata = fs::metadata(&object_path).unwrap();
             let size = file_metadata.len();
             let data = fs::read(&object_path).unwrap_or_default();
             let etag = format!("{:x}", md5::compute(&data));
-            (size, etag, Utc::now(), "application/octet-stream".to_string())
+            (size, etag, Utc::now(), "application/octet-stream".to_string(), HashMap::new())
         }
     } else {
         // No metadata file, check in-memory storage or use file stats
@@ -3689,15 +3879,21 @@ async fn head_object(
         let size = file_metadata.len();
         let data = fs::read(&object_path).unwrap_or_default();
         let etag = format!("{:x}", md5::compute(&data));
-        (size, etag, Utc::now(), "application/octet-stream".to_string())
+        (size, etag, Utc::now(), "application/octet-stream".to_string(), HashMap::new())
     };
 
-    Response::builder()
+    let mut response = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, content_type)
         .header(header::CONTENT_LENGTH, size.to_string())
         .header(header::ETAG, format!("\"{}\"", etag))
-        .header(header::LAST_MODIFIED, format_http_date(&last_modified))
-        .body(Body::empty())
-        .unwrap()
+        .header(header::LAST_MODIFIED, format_http_date(&last_modified));
+
+    // Add custom metadata headers
+    for (key, value) in custom_metadata {
+        let header_name = format!("x-amz-meta-{}", key);
+        response = response.header(header_name, value);
+    }
+
+    response.body(Body::empty()).unwrap()
 }

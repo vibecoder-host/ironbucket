@@ -27,6 +27,7 @@ base64 = "0.21"
 rand = "0.8"
 aes-gcm = "0.10"
 urlencoding = "2.1"
+ring = "0.17"
 
 [dev-dependencies]
 reqwest = { version = "0.11", features = ["json"] }

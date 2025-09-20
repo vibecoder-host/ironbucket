@@ -15,4 +15,6 @@ services:
       - SECRET_KEY=${SECRET_KEY:-xxxxxxxxxxxxxxx}
       - AUTO_REMOVE_EMPTY_FOLDERS=1
       - AUTO_REMOVE_EMPTY_FOLDERS_EVERY_X_MIN=5
+      - ENABLE_ENCRYPTION=${ENABLE_ENCRYPTION:-true}
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY:-}
     restart: always
