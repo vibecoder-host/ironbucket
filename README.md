@@ -24,6 +24,8 @@ High-performance S3-compatible storage server written in Rust, optimized for spe
 - **Zero-Copy Operations**: Efficient memory usage for large files
 - **Exceptional Performance**: 20,000+ operations per second
 
+Also check the Web UI here: https://github.com/vibecoder-host/ironbucket-ui
+
 ## Performance Metrics
 
 <details>
@@ -317,6 +319,27 @@ docker-compose up -d
 - [ ] Replication
 - [ ] Event notifications
 
+
+## Documentation
+
+Comprehensive documentation is available in the `/doc` folder:
+
+### Setup & Configuration
+- [**Installation Guide**](doc/INSTALL.md) - Complete installation instructions for various platforms
+- [**Configuration Guide**](doc/CONFIGURATION.md) - Detailed configuration options and environment variables
+- [**Security Guide**](doc/SECURITY.md) - Security best practices and authentication setup
+
+### Usage Guides
+- [**API Reference**](doc/API.md) - Complete S3 API endpoint documentation
+- [**CLI Usage**](doc/USAGE_CLI.md) - Command-line interface guide and examples
+- [**Node.js SDK**](doc/USAGE_NODEJS.md) - Node.js integration and AWS SDK usage
+- [**Python SDK**](doc/USAGE_PYTHON.md) - Python boto3 integration guide
+- [**Rust SDK**](doc/USAGE_RUST.md) - Rust AWS SDK integration examples
+
+### Operations & Maintenance
+- [**Performance Guide**](doc/PERFORMANCE.md) - Performance tuning and optimization tips
+- [**Troubleshooting**](doc/TROUBLESHOOTING.md) - Common issues and solutions
+- [**Documentation Index**](doc/README.md) - Overview of all documentation
 
 ## Contributing
 
