@@ -40,7 +40,7 @@ tar -xzf warp_Linux_x86_64.tar.gz
 
 # Run mixed workload benchmark
 ./warp mixed \
-  --host=localhost:9000 \
+  --host=172.17.0.1:20000 \
   --access-key=$IRONBUCKET_ACCESS_KEY \
   --secret-key=$IRONBUCKET_SECRET_KEY \
   --objects=10000 \
@@ -48,9 +48,9 @@ tar -xzf warp_Linux_x86_64.tar.gz
   --concurrent=50
 
 # Specific operation benchmarks
-./warp get --host=localhost:9000 --duration=60s --concurrent=100
-./warp put --host=localhost:9000 --obj.size=1MB --duration=60s
-./warp delete --host=localhost:9000 --duration=60s --batch=100
+./warp get --host=172.17.0.1:20000 --duration=60s --concurrent=100
+./warp put --host=172.17.0.1:20000 --obj.size=1MB --duration=60s
+./warp delete --host=172.17.0.1:20000 --duration=60s --batch=100
 ```
 
 #### Custom Benchmark Script
@@ -59,7 +59,7 @@ tar -xzf warp_Linux_x86_64.tar.gz
 #!/bin/bash
 # benchmark.sh - Custom IronBucket benchmark
 
-ENDPOINT="http://localhost:9000"
+ENDPOINT="http://172.17.0.1:20000"
 BUCKET="benchmark-bucket"
 THREADS=50
 DURATION=60
@@ -233,43 +233,6 @@ export DIR_CACHE_TTL=300
 
 # Logging (reduce for performance)
 export RUST_LOG=ironbucket=warn
-```
-
-### Configuration File for Performance
-
-```toml
-# config.toml
-[server]
-host = "0.0.0.0"
-port = 9000
-workers = 0  # Auto-detect
-max_connections = 10000
-keep_alive = 300
-request_timeout = 600
-
-[storage]
-path = "/nvme/ironbucket/data"  # Use fast storage
-max_file_size = 53687091200
-temp_dir = "/dev/shm/ironbucket"  # Use RAM disk for temp
-enable_compression = false
-enable_dedup = false  # Disable for speed
-
-[network]
-tcp_nodelay = true
-tcp_keepalive = 7200
-buffer_size = 524288
-
-[cache]
-enabled = true
-max_size = 4294967296
-ttl = 3600
-
-[logging]
-level = "warn"  # Reduce logging overhead
-format = "compact"
-
-[metrics]
-enabled = false  # Disable if not needed
 ```
 
 ## Network Optimization
