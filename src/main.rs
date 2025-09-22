@@ -146,13 +146,17 @@ fn decrypt_data(ciphertext: &[u8], key: &[u8], nonce: &[u8]) -> Result<Vec<u8>, 
     }
 }
 
-// Check if an action is allowed based on bucket policy
+// Check if an action is allowed based on bucket policy with IP conditions
 fn check_policy_permission(
     policy_json: &str,
     action: &str,
     resource: &str,
     principal: &str,
+    client_ip: Option<&str>,
 ) -> bool {
+    debug!("Checking policy permission: action={}, resource={}, principal={}, client_ip={:?}",
+           action, resource, principal, client_ip);
+
     // Parse the policy
     if let Ok(policy) = serde_json::from_str::<serde_json::Value>(policy_json) {
         if let Some(statements) = policy.get("Statement").and_then(|s| s.as_array()) {
@@ -221,8 +225,73 @@ fn check_policy_permission(
                     false
                 };
 
-                // If all conditions match
-                if principal_match && action_match && resource_match {
+                // Check Conditions (including IP address)
+                let condition_match = if let Some(conditions) = statement.get("Condition") {
+                    let mut all_conditions_met = true;
+
+                    // Check IpAddress condition
+                    if let Some(ip_condition) = conditions.get("IpAddress") {
+                        if let Some(source_ip_condition) = ip_condition.get("aws:SourceIp") {
+                            if let Some(client_ip_str) = client_ip {
+                                let ip_allowed = if let Some(arr) = source_ip_condition.as_array() {
+                                    arr.iter().any(|allowed_ip| {
+                                        if let Some(ip_str) = allowed_ip.as_str() {
+                                            is_ip_in_range(client_ip_str, ip_str)
+                                        } else {
+                                            false
+                                        }
+                                    })
+                                } else if let Some(ip_str) = source_ip_condition.as_str() {
+                                    is_ip_in_range(client_ip_str, ip_str)
+                                } else {
+                                    false
+                                };
+                                if !ip_allowed {
+                                    debug!("IP condition not met: client_ip={} not in allowed range", client_ip_str);
+                                    all_conditions_met = false;
+                                }
+                            } else {
+                                // No client IP available, condition fails
+                                debug!("IP condition not met: no client IP available");
+                                all_conditions_met = false;
+                            }
+                        }
+                    }
+
+                    // Check NotIpAddress condition
+                    if let Some(not_ip_condition) = conditions.get("NotIpAddress") {
+                        if let Some(source_ip_condition) = not_ip_condition.get("aws:SourceIp") {
+                            if let Some(client_ip_str) = client_ip {
+                                let ip_blocked = if let Some(arr) = source_ip_condition.as_array() {
+                                    arr.iter().any(|blocked_ip| {
+                                        if let Some(ip_str) = blocked_ip.as_str() {
+                                            is_ip_in_range(client_ip_str, ip_str)
+                                        } else {
+                                            false
+                                        }
+                                    })
+                                } else if let Some(ip_str) = source_ip_condition.as_str() {
+                                    is_ip_in_range(client_ip_str, ip_str)
+                                } else {
+                                    false
+                                };
+                                if ip_blocked {
+                                    debug!("NotIpAddress condition not met: client_ip={} is in blocked range", client_ip_str);
+                                    all_conditions_met = false;
+                                }
+                            }
+                        }
+                    }
+
+                    all_conditions_met
+                } else {
+                    // No conditions, always match
+                    true
+                };
+
+                // If all conditions match (including IP conditions)
+                if principal_match && action_match && resource_match && condition_match {
+                    debug!("Statement matched with effect: {}", effect);
                     if effect == "Allow" {
                         return true;
                     } else if effect == "Deny" {
@@ -234,7 +303,71 @@ fn check_policy_permission(
     }
 
     // Default deny if no matching statement
+    debug!("No matching statement found, denying access");
     false
+}
+
+// Helper function to check if an IP is in a CIDR range
+fn is_ip_in_range(ip: &str, range: &str) -> bool {
+    use std::net::{IpAddr, Ipv4Addr};
+
+    // Parse the IP address
+    let client_ip = match ip.parse::<IpAddr>() {
+        Ok(IpAddr::V4(addr)) => addr,
+        _ => {
+            debug!("Failed to parse client IP: {}", ip);
+            return false;
+        }
+    };
+
+    // Check if range is a CIDR notation
+    if let Some(slash_pos) = range.find('/') {
+        let (network_str, prefix_str) = range.split_at(slash_pos);
+        let prefix_len: u8 = match prefix_str[1..].parse() {
+            Ok(len) if len <= 32 => len,
+            _ => {
+                debug!("Invalid CIDR prefix length: {}", prefix_str);
+                return false;
+            }
+        };
+
+        let network_ip = match network_str.parse::<Ipv4Addr>() {
+            Ok(addr) => addr,
+            _ => {
+                debug!("Failed to parse network IP: {}", network_str);
+                return false;
+            }
+        };
+
+        // Create mask
+        let mask = if prefix_len == 0 {
+            0
+        } else {
+            !((1u32 << (32 - prefix_len)) - 1)
+        };
+
+        // Convert IPs to u32 for comparison
+        let client_u32 = u32::from_be_bytes(client_ip.octets());
+        let network_u32 = u32::from_be_bytes(network_ip.octets());
+
+        // Check if client IP is in the network range
+        let in_range = (client_u32 & mask) == (network_u32 & mask);
+        debug!("IP range check: {} in {} = {}", ip, range, in_range);
+        in_range
+    } else {
+        // Single IP address comparison
+        match range.parse::<Ipv4Addr>() {
+            Ok(allowed_ip) => {
+                let matches = client_ip == allowed_ip;
+                debug!("IP exact match check: {} == {} = {}", ip, range, matches);
+                matches
+            }
+            _ => {
+                debug!("Failed to parse allowed IP: {}", range);
+                false
+            }
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -3392,8 +3525,32 @@ async fn auth_middleware(
     request: Request<Body>,
     next: Next,
 ) -> Response {
+    // Extract client IP from headers, defaulting to localhost if not found
+    let client_ip = headers.get("x-real-ip")
+        .or_else(|| headers.get("x-forwarded-for"))
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.split(',').next().unwrap_or(s).trim().to_string())
+        .or_else(|| Some("127.0.0.1".to_string()));  // Default to localhost for direct connections
+
     // Log all requests for debugging
-    debug!("Request: {:?} {} {:?}", request.method(), request.uri(), headers);
+    debug!("Request: {:?} {} {:?} from IP: {:?}", request.method(), request.uri(), headers, client_ip);
+
+    // Extract bucket name from the path
+    let path = request.uri().path();
+    let bucket_name = if path != "/" {
+        path.trim_start_matches('/').split('/').next()
+    } else {
+        None
+    };
+
+    // Determine S3 action from request method and path
+    let action = match request.method() {
+        &Method::GET => "s3:GetObject",
+        &Method::PUT => "s3:PutObject",
+        &Method::DELETE => "s3:DeleteObject",
+        &Method::HEAD => "s3:GetObject",
+        _ => "s3:*",
+    };
 
     // OPTIONS requests bypass auth for CORS
     if request.method() == Method::OPTIONS {
@@ -3468,6 +3625,48 @@ async fn auth_middleware(
                         // For now, we'll do a simple check and accept valid access keys
                         // Full signature verification would require rebuilding the canonical request
                         debug!("Authenticated presigned URL request with access key: {}", access_key);
+
+                        // Check bucket policy with IP conditions
+                        if let Some(bucket) = bucket_name {
+                            // First try to get policy from memory
+                            let policy_json = {
+                                let buckets = state.buckets.lock().unwrap();
+                                buckets.get(bucket).and_then(|b| b.policy.clone())
+                            };
+
+                            // If not in memory, try to load from disk
+                            let policy_json = policy_json.or_else(|| {
+                                let policy_file = state.storage_path.join(bucket).join(".policy");
+                                if policy_file.exists() {
+                                    fs::read_to_string(&policy_file).ok()
+                                } else {
+                                    None
+                                }
+                            });
+
+                            if let Some(ref policy_str) = policy_json {
+                                let resource = format!("arn:aws:s3:::{}/{}*", bucket,
+                                    path.trim_start_matches('/').trim_start_matches(bucket).trim_start_matches('/'));
+
+                                let allowed = check_policy_permission(
+                                    policy_str,
+                                    action,
+                                    &resource,
+                                    "*", // Principal for presigned URLs
+                                    client_ip.as_deref()
+                                );
+
+                                if !allowed {
+                                    info!("Access denied by bucket policy for presigned URL: bucket={}, action={}, client_ip={:?}",
+                                          bucket, action, client_ip);
+                                    return Response::builder()
+                                        .status(StatusCode::FORBIDDEN)
+                                        .body(Body::from("Access Denied by bucket policy"))
+                                        .unwrap();
+                                }
+                            }
+                        }
+
                         return next.run(request).await;
                     }
                 }
@@ -3491,6 +3690,48 @@ async fn auth_middleware(
                             // Check if access key exists
                             if state.access_keys.contains_key(access_key) {
                                 debug!("Authenticated request with access key: {}", access_key);
+
+                                // Check bucket policy with IP conditions
+                                if let Some(bucket) = bucket_name {
+                                    // First try to get policy from memory
+                                    let policy_json = {
+                                        let buckets = state.buckets.lock().unwrap();
+                                        buckets.get(bucket).and_then(|b| b.policy.clone())
+                                    };
+
+                                    // If not in memory, try to load from disk
+                                    let policy_json = policy_json.or_else(|| {
+                                        let policy_file = state.storage_path.join(bucket).join(".policy");
+                                        if policy_file.exists() {
+                                            fs::read_to_string(&policy_file).ok()
+                                        } else {
+                                            None
+                                        }
+                                    });
+
+                                    if let Some(ref policy_str) = policy_json {
+                                        let resource = format!("arn:aws:s3:::{}/{}*", bucket,
+                                            path.trim_start_matches('/').trim_start_matches(bucket).trim_start_matches('/'));
+
+                                        let allowed = check_policy_permission(
+                                            policy_str,
+                                            action,
+                                            &resource,
+                                            access_key, // Use actual access key as principal
+                                            client_ip.as_deref()
+                                        );
+
+                                        if !allowed {
+                                            info!("Access denied by bucket policy: bucket={}, action={}, client_ip={:?}",
+                                                  bucket, action, client_ip);
+                                            return Response::builder()
+                                                .status(StatusCode::FORBIDDEN)
+                                                .body(Body::from("Access Denied by bucket policy"))
+                                                .unwrap();
+                                        }
+                                    }
+                                }
+
                                 return next.run(request).await;
                             }
                         }
