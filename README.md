@@ -37,44 +37,45 @@ Also check the Web UI here: https://github.com/vibecoder-host/ironbucket-ui
 ```
 
 ### 1KB Files
-- **Total Throughput**: 20,164 obj/s | 11.54 MB/s (mixed workload)
-- **PUT Operations**: 3,563 obj/s | 2.88 MB/s
-- **GET Operations**: 9,073 obj/s | 8.65 MB/s
-- **DELETE Operations**: 2,016 obj/s
-- **STAT Operations**: 5,127 obj/s
-- **Latency**: < 3ms average response time (P50), 15ms (P99)
+- **Total Throughput**: 28,561 obj/s | 16.71 MB/s (mixed workload)
+- **PUT Operations**: 4,284 obj/s | 4.09 MB/s
+- **GET Operations**: 12,852 obj/s | 12.26 MB/s
+- **DELETE Operations**: 2,856 obj/s
+- **STAT Operations**: 8,568 obj/s
+- **Latency**: < 2ms average response time (P50), 15ms (P99)
 
 ### 10KB Files
-- **Total Throughput**: 19,476 obj/s | 111.43 MB/s (mixed workload)
-- **PUT Operations**: 2,920 obj/s | 27.85 MB/s
-- **GET Operations**: 8,764 obj/s | 83.58 MB/s
-- **DELETE Operations**: 1,947 obj/s
-- **STAT Operations**: 5,844 obj/s
-- **Latency**: < 3ms average response time (P50), 18ms (P99)
+- **Total Throughput**: 26,627 obj/s | 152.34 MB/s (mixed workload)
+- **PUT Operations**: 3,993 obj/s | 38.08 MB/s
+- **GET Operations**: 11,981 obj/s | 114.26 MB/s
+- **DELETE Operations**: 2,663 obj/s
+- **STAT Operations**: 7,989 obj/s
+- **Latency**: < 2ms average response time (P50), 18ms (P99)
 
 ### 100KB Files
-- **Total Throughput**: 14,296 obj/s | 818.28 MB/s (mixed workload)
-- **PUT Operations**: 2,144 obj/s | 204.52 MB/s
-- **GET Operations**: 6,432 obj/s | 613.49 MB/s
-- **DELETE Operations**: 1,429 obj/s
-- **STAT Operations**: 4,129 obj/s
-- **Latency**: < 4ms average response time (P50), 25ms (P99)
+- **Total Throughput**: 19,307 obj/s | 1104.77 MB/s (mixed workload)
+- **PUT Operations**: 2,896 obj/s | 276.23 MB/s
+- **GET Operations**: 8,687 obj/s | 828.54 MB/s
+- **DELETE Operations**: 1,930 obj/s
+- **STAT Operations**: 5,792 obj/s
+- **Latency**: < 3ms average response time (P50), 24ms (P99)
 
 ### 1MB Files
-- **Total Throughput**: 4,671 obj/s | 2.67 GB/s (mixed workload)
-- **PUT Operations**: 701 obj/s | 668.66 MB/s
-- **GET Operations**: 2,101 obj/s | 2.00 GB/s
-- **DELETE Operations**: 467 obj/s
-- **STAT Operations**: 1,401 obj/s
-- **Latency**: < 8ms average response time (P50), 45ms (P99)
+- **Total Throughput**: 5,067 obj/s | 2.898 GB/s (mixed workload)
+- **PUT Operations**: 759 obj/s | 724.29 MB/s
+- **GET Operations**: 2,280 obj/s | 2.18 GB/s
+- **DELETE Operations**: 507 obj/s
+- **STAT Operations**: 1,520 obj/s
+- **Latency**: < 5ms average response time (P50), 36ms (P99)
 
 ### 10MB Files
-- **Total Throughput**: 543 obj/s | 3.12 GB/s (mixed workload)
-- **PUT Operations**: 82 obj/s | 782.53 MB/s
-- **GET Operations**: 245 obj/s | 2.33 GB/s
-- **DELETE Operations**: 54 obj/s
-- **STAT Operations**: 162 obj/s
-- **Latency**: < 25ms average response time (P50), 220ms (P99)
+- **Total Throughput**: 735 obj/s | 4.23 GB/s (mixed workload)
+- **PUT Operations**: 110 obj/s | 1049.50 MB/s
+- **GET Operations**: 330 obj/s | 3.16 GB/s
+- **DELETE Operations**: 73 obj/s
+- **STAT Operations**: 221 obj/s
+- **Latency**: < 25ms average response time (P50), 140ms (P99)
+                    
 
 </details>  
   
