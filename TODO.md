@@ -134,6 +134,18 @@ The x-amz-delete-marker: true response header tells you that the object accessed
 - ⬜ **Notify peer nodes on bucket operations** (`src/cluster.rs:36`)
 - ⬜ **Check cluster health** (`src/cluster.rs:41`)
 
+### Erasure Coding
+- ⬜ **Implement Reed-Solomon erasure coding** (See detailed plan in [`EC.md`](EC.md))
+  - ⬜ Core erasure coding library with Reed-Solomon
+  - ⬜ Storage backend integration for shard operations
+  - ⬜ Cluster-aware shard distribution
+  - ⬜ Read/write operations with degraded read support
+  - ⬜ Recovery and repair mechanisms
+  - ⬜ Configuration for different storage classes (ERASURE_6_3, ERASURE_10_4, ERASURE_4_2)
+  - ⬜ Performance optimization and caching
+  - ⬜ Testing suite (unit, integration, chaos)
+  - **Target**: 50% storage savings vs 3x replication, <10ms additional latency
+
 ---
 
 ## Optional
@@ -265,7 +277,7 @@ The x-amz-delete-marker: true response header tells you that the object accessed
 
 ---
 
-*Last Updated: 2025-09-19*
-*Total Tasks: 62 (Completed: 58, In Progress: 0, Pending: 4)*
+*Last Updated: 2025-09-24*
+*Total Tasks: 71 (Completed: 58, In Progress: 0, Pending: 13)*
 *Test Coverage: 146+ integration tests across 10 test suites - All passing ✅*
 *Recent Progress: Completed ring-based AES-256-GCM encryption implementation with full environment variable support and comprehensive test coverage*
