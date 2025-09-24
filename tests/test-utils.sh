@@ -134,9 +134,8 @@ check_metadata_exists() {
     local bucket="$1"
     local key="$2"
 
-    # Remove extension from key and add .metadata
-    local key_base="${key%.*}"
-    local metadata_file="${STORAGE_PATH}/${bucket}/${key_base}.metadata"
+    # Metadata files are stored as key.metadata (including extension)
+    local metadata_file="${STORAGE_PATH}/${bucket}/${key}.metadata"
 
     if [ -f "$metadata_file" ]; then
         echo -e "${GREEN}✓ Metadata exists: ${metadata_file}${NC}"
@@ -152,8 +151,8 @@ get_metadata_content() {
     local bucket="$1"
     local key="$2"
 
-    local key_base="${key%.*}"
-    local metadata_file="${STORAGE_PATH}/${bucket}/${key_base}.metadata"
+    # Metadata files are stored as key.metadata (including extension)
+    local metadata_file="${STORAGE_PATH}/${bucket}/${key}.metadata"
 
     if [ -f "$metadata_file" ]; then
         cat "$metadata_file"

@@ -1464,31 +1464,15 @@ pub async fn list_objects_impl(
     // Use a recursive approach to handle prefixes that represent directories
     info!("Scanning filesystem for objects at: {:?} with prefix: {:?}", bucket_path, prefix_str);
 
-    fn scan_directory(base_path: &std::path::Path, _current_prefix: &str, target_prefix: &str, _delimiter: Option<&str>) -> Vec<(String, ObjectData)> {
+    fn scan_directory(base_path: &std::path::Path, current_path: &std::path::Path, target_prefix: &str, _delimiter: Option<&str>) -> Vec<(String, ObjectData)> {
         let mut results = Vec::new();
 
-        // Determine which directory to scan based on the prefix
-        let scan_path = if !target_prefix.is_empty() && target_prefix.ends_with('/') {
-            // If prefix ends with /, scan that subdirectory
-            base_path.join(&target_prefix[..target_prefix.len()-1])
-        } else if !target_prefix.is_empty() && target_prefix.contains('/') {
-            // If prefix contains / but doesn't end with it, scan the parent directory
-            let parts: Vec<&str> = target_prefix.rsplitn(2, '/').collect();
-            if parts.len() == 2 {
-                base_path.join(parts[1])
-            } else {
-                base_path.to_path_buf()
-            }
-        } else {
-            base_path.to_path_buf()
-        };
-
-        if let Ok(entries) = fs::read_dir(&scan_path) {
+        if let Ok(entries) = fs::read_dir(current_path) {
             for entry in entries.flatten() {
                 if let Ok(metadata) = entry.metadata() {
                     if let Some(name) = entry.file_name().to_str() {
-                        // Skip metadata files and hidden files
-                        if !name.ends_with(".metadata") && !name.starts_with(".") {
+                        // Skip metadata files and hidden files (except .bucket_metadata)
+                        if !name.ends_with(".metadata") && (!name.starts_with(".") || name == ".bucket_metadata") {
                             // Build the full key path relative to bucket
                             let relative_path = if let Ok(rel) = entry.path().strip_prefix(base_path) {
                                 rel.to_string_lossy().to_string()
@@ -1496,36 +1480,37 @@ pub async fn list_objects_impl(
                                 continue;
                             };
 
-                            // Convert Windows paths to forward slashes
-                            let mut key = relative_path.replace('\\', "/");
-
-                            // Add trailing slash for directories
-                            if metadata.is_dir() {
-                                key.push('/');
+                            // Skip .bucket_metadata file from results
+                            if relative_path == ".bucket_metadata" {
+                                continue;
                             }
+
+                            // Convert Windows paths to forward slashes
+                            let key = relative_path.replace('\\', "/");
 
                             // Check if this key matches our target prefix
                             if key.starts_with(target_prefix) {
-                                let size = if metadata.is_file() {
-                                    metadata.len() as usize
-                                } else {
-                                    0 // Directories have size 0
-                                };
+                                if metadata.is_file() {
+                                    let size = metadata.len() as usize;
+                                    let last_modified = metadata.modified()
+                                        .ok()
+                                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                                        .map(|d| Utc.timestamp_opt(d.as_secs() as i64, d.subsec_nanos()).unwrap())
+                                        .unwrap_or_else(Utc::now);
 
-                                let last_modified = metadata.modified()
-                                    .ok()
-                                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                                    .map(|d| Utc.timestamp_opt(d.as_secs() as i64, d.subsec_nanos()).unwrap())
-                                    .unwrap_or_else(Utc::now);
+                                    let etag = format!("{:x}", md5::compute(format!("{}-{}", size, last_modified.timestamp()).as_bytes()));
 
-                                let etag = format!("{:x}", md5::compute(format!("{}-{}", size, last_modified.timestamp()).as_bytes()));
-
-                                results.push((key, ObjectData {
-                                    data: Vec::new(),
-                                    size,
-                                    last_modified,
-                                    etag,
-                                }));
+                                    results.push((key, ObjectData {
+                                        data: Vec::new(),
+                                        size,
+                                        last_modified,
+                                        etag,
+                                    }));
+                                } else if metadata.is_dir() {
+                                    // Recursively scan subdirectories
+                                    let sub_results = scan_directory(base_path, &entry.path(), target_prefix, _delimiter);
+                                    results.extend(sub_results);
+                                }
                             }
                         }
                     }
@@ -1536,7 +1521,7 @@ pub async fn list_objects_impl(
         results
     }
 
-    let mut all_objects = scan_directory(&bucket_path, "", prefix_str, delimiter.as_deref());
+    let mut all_objects = scan_directory(&bucket_path, &bucket_path, prefix_str, delimiter.as_deref());
     let object_count = all_objects.len();
     info!("Scan complete: {} total objects matching prefix '{}' in bucket {}",
           object_count, prefix_str, bucket);
