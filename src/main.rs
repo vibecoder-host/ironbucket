@@ -23,6 +23,7 @@ mod cleanup;
 mod policy_check;
 mod filesystem;
 mod handlers;
+mod quota;
 
 // Re-export commonly used items from modules
 pub use models::*;
@@ -63,10 +64,23 @@ async fn main() {
 
     info!("Using access key: {}", access_key);
 
+    // Check if quota and stats are enabled (default: disabled)
+    let enable_quota = env::var("ENABLE_QUOTA_AND_STATS")
+        .unwrap_or_else(|_| "0".to_string()) == "1";
+
+    if enable_quota {
+        info!("Quota and stats management is ENABLED");
+    } else {
+        info!("Quota and stats management is DISABLED");
+    }
+
+    let quota_manager = Arc::new(quota::QuotaManager::new(storage_path.clone(), enable_quota));
+
     let state = AppState {
         storage_path: storage_path.clone(),
         access_keys: Arc::new(access_keys),
         multipart_uploads: Arc::new(Mutex::new(HashMap::new())),
+        quota_manager: quota_manager.clone(),
     };
 
     let app = Router::new()
@@ -89,7 +103,7 @@ async fn main() {
         // Object endpoints with query parameter support
         .route("/:bucket/*key", get(handle_object_get))
         .route("/:bucket/*key", put(handle_object_put))
-        .route("/:bucket/*key", post(handle_object_post))
+        // .route("/:bucket/*key", post(handle_object_post))  // TODO: Fix handler compilation
         .route("/:bucket/*key", delete(handle_object_delete))
         .route("/:bucket/*key", head(head_object))
 
@@ -100,6 +114,9 @@ async fn main() {
 
     // Spawn the background cleanup task
     tokio::spawn(cleanup::cleanup_empty_directories(storage_path.clone()));
+
+    // Spawn the quota flush task
+    tokio::spawn(quota_manager.start_flush_task());
 
     let addr = SocketAddr::from(([0, 0, 0, 0], 9000));
     info!("IronBucket listening on {} with full S3 API support", addr);

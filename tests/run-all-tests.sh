@@ -66,6 +66,7 @@ run_test_suite "Encryption Module" "./test-encryption-module-docker.sh"
 run_test_suite "CORS" "./test-cors.sh"
 run_test_suite "Lifecycle Management" "./test-lifecycle.sh"
 run_test_suite "Pagination" "./test-pagination.sh"
+run_test_suite "Quota and Stats" "./test-quota-stats.sh"
 
 # Performance tests are optional (they take longer)
 if [ "${RUN_PERFORMANCE_TESTS:-false}" = "true" ]; then

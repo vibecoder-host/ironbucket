@@ -6,7 +6,6 @@ use axum::{
 };
 use bytes::Bytes;
 use chrono::{DateTime, Utc, TimeZone};
-use serde::Deserialize;
 use std::{collections::HashMap, fs};
 use tracing::{debug, info, warn};
 use uuid::Uuid;
@@ -20,23 +19,11 @@ use rand::RngCore;
 use crate::{
     AppState, ObjectMetadata, ObjectEncryption,
     MultipartUpload, UploadPart, format_http_date,
-    filesystem::{read_bucket_versioning, read_bucket_encryption}
+    filesystem::{read_bucket_versioning, read_bucket_encryption},
+    models::Operation, ObjectQueryParams,
 };
 
-// Query parameters for object operations
-#[derive(Deserialize, Debug)]
-pub struct ObjectQueryParams {
-    pub uploads: Option<String>,
-    #[serde(rename = "uploadId")]
-    pub upload_id: Option<String>,
-    #[serde(rename = "partNumber")]
-    pub part_number: Option<i32>,
-    pub acl: Option<String>,
-    pub versions: Option<String>,
-    #[serde(rename = "versionId")]
-    pub version_id: Option<String>,
-    pub tagging: Option<String>,
-}
+// Use ObjectQueryParams from models
 
 // Handle object GET with query parameters
 pub async fn handle_object_get(
@@ -45,6 +32,11 @@ pub async fn handle_object_get(
     Query(params): Query<ObjectQueryParams>,
 ) -> impl IntoResponse {
     debug!("GET object: {}/{} with params: {:?}", bucket, key, params);
+
+    // Increment stats for GET operation
+    if let Err(e) = state.quota_manager.increment_stat(&bucket, Operation::Get).await {
+        warn!("Failed to update GET stats for bucket {}: {}", bucket, e);
+    }
 
     if params.acl.is_some() {
         // Return object ACL
@@ -316,6 +308,28 @@ pub async fn handle_object_put(
 ) -> impl IntoResponse {
     debug!("PUT object: {}/{} with params: {:?}", bucket, key, params);
 
+    // Check quota before accepting upload (skip for ACL/tagging operations)
+    if params.acl.is_none() && params.tagging.is_none() {
+        let content_length = body.len() as u64;
+        match state.quota_manager.check_quota(&bucket, content_length).await {
+            Ok(false) => {
+                warn!("Quota exceeded for bucket {}: attempted to add {} bytes", bucket, content_length);
+                return Response::builder()
+                    .status(StatusCode::INSUFFICIENT_STORAGE)
+                    .header("x-amz-error-code", "QuotaExceeded")
+                    .body(Body::from("Bucket quota exceeded"))
+                    .unwrap();
+            }
+            Err(e) => {
+                warn!("Failed to check quota for bucket {}: {}", bucket, e);
+                // Continue anyway - don't fail on quota check errors
+            }
+            Ok(true) => {
+                // Quota ok, continue
+            }
+        }
+    }
+
     if params.acl.is_some() {
         // Set object ACL (just accept but don't actually implement)
         return Response::builder()
@@ -490,8 +504,7 @@ pub async fn handle_object_post(
     State(state): State<AppState>,
     Path((bucket, key)): Path<(String, String)>,
     Query(params): Query<ObjectQueryParams>,
-    headers: HeaderMap,
-    _body: Bytes,
+    body: Bytes,
 ) -> impl IntoResponse {
     debug!("POST object: {}/{} with params: {:?}", bucket, key, params);
 
@@ -499,12 +512,8 @@ pub async fn handle_object_post(
         // Initiate multipart upload
         let upload_id = Uuid::new_v4().to_string();
 
-        // Extract Content-Type from headers for multipart upload
-        let content_type = headers
-            .get(header::CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("application/octet-stream")
-            .to_string();
+        // Default Content-Type for multipart upload
+        let content_type = "application/octet-stream".to_string();
 
         let initiated = Utc::now();
         let upload = MultipartUpload {
@@ -601,6 +610,14 @@ pub async fn handle_object_post(
                     .status(StatusCode::INTERNAL_SERVER_ERROR)
                     .body(Body::empty())
                     .unwrap();
+            }
+
+            // Update quota and stats after successful multipart upload
+            if let Err(e) = state.quota_manager.update_quota_add(&bucket, combined_data.len() as u64).await {
+                warn!("Failed to update quota for bucket {} after multipart upload: {}", bucket, e);
+            }
+            if let Err(e) = state.quota_manager.increment_stat(&bucket, Operation::Multipart).await {
+                warn!("Failed to update multipart stats for bucket {}: {}", bucket, e);
             }
 
             // Save object metadata
@@ -987,6 +1004,14 @@ pub async fn put_object(
                 info!("Successfully copied object from {}/{} to {}/{} with content-type: {}",
                       source_bucket, decoded_source_key, bucket, key, content_type);
 
+                // Update quota and stats after successful copy
+                if let Err(e) = state.quota_manager.update_quota_add(&bucket, data.len() as u64).await {
+                    warn!("Failed to update quota for bucket {} after copy: {}", bucket, e);
+                }
+                if let Err(e) = state.quota_manager.increment_stat(&bucket, Operation::Put).await {
+                    warn!("Failed to update PUT stats for bucket {} after copy: {}", bucket, e);
+                }
+
                 // Return success response with ETag
                 return Response::builder()
                     .status(StatusCode::OK)
@@ -1235,6 +1260,14 @@ pub async fn put_object(
 
     info!("Object stored at: {:?}", object_path);
 
+    // Update quota and stats after successful write
+    if let Err(e) = state.quota_manager.update_quota_add(&bucket, final_data.len() as u64).await {
+        warn!("Failed to update quota for bucket {}: {}", bucket, e);
+    }
+    if let Err(e) = state.quota_manager.increment_stat(&bucket, Operation::Put).await {
+        warn!("Failed to update PUT stats for bucket {}: {}", bucket, e);
+    }
+
     let mut response = Response::builder()
         .status(StatusCode::OK)
         .header(header::ETAG, format!("\"{}\"", etag));
@@ -1357,8 +1390,20 @@ pub async fn delete_object(
 ) -> impl IntoResponse {
     info!("Deleting object: {}/{}", bucket, key);
 
+    // Increment stats for DELETE operation
+    if let Err(e) = state.quota_manager.increment_stat(&bucket, Operation::Delete).await {
+        warn!("Failed to update DELETE stats for bucket {}: {}", bucket, e);
+    }
+
     // Check if the path is a directory
     let object_path = state.storage_path.join(&bucket).join(&key);
+
+    // Get object size before deletion for quota update (only if it's a file)
+    let object_size = if object_path.is_file() {
+        fs::metadata(&object_path).ok().map(|m| m.len())
+    } else {
+        None
+    };
 
     // If path ends with '/' or is a directory, handle it as a prefix deletion
     if key.ends_with('/') || object_path.is_dir() {
@@ -1411,6 +1456,16 @@ pub async fn delete_object(
         debug!("Deleted metadata file for {}/{}", bucket, key);
     }
 
+    // Update quota if we successfully deleted a file
+    if disk_deleted && !object_path.is_dir() {
+        // Always update quota for successful file deletion
+        // Use the size if we have it, otherwise use 0 (object count will still be decremented)
+        let size_to_remove = object_size.unwrap_or(0);
+        if let Err(e) = state.quota_manager.update_quota_remove(&bucket, size_to_remove).await {
+            warn!("Failed to update quota for bucket {} after deletion: {}", bucket, e);
+        }
+    }
+
     if disk_deleted || metadata_deleted {
         StatusCode::NO_CONTENT
     } else {
@@ -1422,6 +1477,11 @@ pub async fn head_object(
     State(state): State<AppState>,
     Path((bucket, key)): Path<(String, String)>,
 ) -> impl IntoResponse {
+    // Increment stats for HEAD operation
+    if let Err(e) = state.quota_manager.increment_stat(&bucket, Operation::Head).await {
+        warn!("Failed to update HEAD stats for bucket {}: {}", bucket, e);
+    }
+
     // Check if object exists on disk
     let object_path = state.storage_path.join(&bucket).join(&key);
 

@@ -6,14 +6,14 @@ use axum::{
 };
 use bytes::Bytes;
 use chrono::{Utc, TimeZone};
-use serde::Deserialize;
+use serde_json;
 use std::{collections::HashSet, fs};
 use tracing::{debug, info, warn, error};
 
 use crate::{
     AppState, BucketEncryption, CorsConfiguration, CorsRule, LifecycleConfiguration,
     LifecycleRule, LifecycleFilter, LifecycleTag, LifecycleExpiration, LifecycleTransition,
-    ObjectData,
+    ObjectData, Operation, BucketQueryParams,
     // Import filesystem functions
     bucket_exists, read_bucket_versioning, read_bucket_policy, read_bucket_encryption,
     read_bucket_cors, read_bucket_lifecycle, write_bucket_versioning, write_bucket_policy,
@@ -21,28 +21,7 @@ use crate::{
     delete_bucket_policy, delete_bucket_encryption, delete_bucket_cors, delete_bucket_lifecycle
 };
 
-// Query parameters for bucket operations
-#[derive(Deserialize, Debug)]
-pub struct BucketQueryParams {
-    pub location: Option<String>,
-    pub versioning: Option<String>,
-    pub versions: Option<String>,
-    pub acl: Option<String>,
-    pub policy: Option<String>,
-    pub encryption: Option<String>,
-    pub cors: Option<String>,
-    pub lifecycle: Option<String>,
-    pub uploads: Option<String>,
-    pub delete: Option<String>,
-    #[serde(rename = "max-keys")]
-    pub max_keys: Option<usize>,
-    pub prefix: Option<String>,
-    #[serde(rename = "continuation-token")]
-    pub continuation_token: Option<String>,
-    pub delimiter: Option<String>,
-    #[serde(rename = "list-type")]
-    pub list_type: Option<String>,
-}
+// Use BucketQueryParams from models
 
 // Handle bucket GET with query parameters
 pub async fn handle_bucket_get(
@@ -326,6 +305,84 @@ pub async fn handle_bucket_get(
     <Message>The lifecycle configuration does not exist</Message>
 </Error>"#))
             .unwrap();
+    }
+
+    if params.quota.is_some() {
+        // Return bucket quota information
+        match state.quota_manager.get_quota(&bucket).await {
+            Ok(quota) => {
+                let quota_json = serde_json::json!({
+                    "max_size_bytes": quota.max_size_bytes,
+                    "current_usage_bytes": quota.current_usage_bytes,
+                    "object_count": quota.object_count,
+                    "last_updated": quota.last_updated.to_rfc3339(),
+                    "usage_percentage": (quota.current_usage_bytes as f64 / quota.max_size_bytes as f64 * 100.0)
+                });
+
+                return Response::builder()
+                    .status(StatusCode::OK)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header("x-amz-bucket-quota", quota.max_size_bytes.to_string())
+                    .header("x-amz-bucket-usage", quota.current_usage_bytes.to_string())
+                    .body(Body::from(serde_json::to_string_pretty(&quota_json).unwrap()))
+                    .unwrap();
+            }
+            Err(e) => {
+                error!("Failed to get quota for bucket {}: {}", bucket, e);
+                return Response::builder()
+                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                    .body(Body::from("Failed to retrieve quota information"))
+                    .unwrap();
+            }
+        }
+    }
+
+    if params.stats.is_some() {
+        // Return bucket statistics
+        let month = params.month.as_deref(); // Use specified month or current month
+
+        match state.quota_manager.get_stats(&bucket, month).await {
+            Ok(stats) => {
+                let stats_json = serde_json::json!({
+                    "bucket": bucket,
+                    "month": month.unwrap_or("current"),
+                    "get_count": stats.get_count,
+                    "put_count": stats.put_count,
+                    "delete_count": stats.delete_count,
+                    "list_count": stats.list_count,
+                    "head_count": stats.head_count,
+                    "multipart_count": stats.multipart_count,
+                    "total_operations": stats.get_count + stats.put_count + stats.delete_count +
+                                       stats.list_count + stats.head_count + stats.multipart_count
+                });
+
+                return Response::builder()
+                    .status(StatusCode::OK)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(serde_json::to_string_pretty(&stats_json).unwrap()))
+                    .unwrap();
+            }
+            Err(_e) => {
+                // Stats file might not exist yet, return empty stats
+                let empty_stats = serde_json::json!({
+                    "bucket": bucket,
+                    "month": month.unwrap_or("current"),
+                    "get_count": 0,
+                    "put_count": 0,
+                    "delete_count": 0,
+                    "list_count": 0,
+                    "head_count": 0,
+                    "multipart_count": 0,
+                    "total_operations": 0
+                });
+
+                return Response::builder()
+                    .status(StatusCode::OK)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(serde_json::to_string_pretty(&empty_stats).unwrap()))
+                    .unwrap();
+            }
+        }
     }
 
     if params.uploads.is_some() {
@@ -1002,6 +1059,13 @@ pub async fn handle_bucket_post(
             let metadata_path = state.storage_path.join(&bucket).join(format!("{}.metadata", delete_obj.key));
 
             if object_path.exists() {
+                // Get file size BEFORE deletion for quota update
+                let file_size = if object_path.is_file() {
+                    fs::metadata(&object_path).ok().map(|m| m.len()).unwrap_or(0)
+                } else {
+                    0
+                };
+
                 // Check if it's a directory or a file
                 let deletion_result = if object_path.is_dir() {
                     // If it's a directory, try to remove it (only if empty)
@@ -1013,13 +1077,23 @@ pub async fn handle_bucket_post(
 
                 match deletion_result {
                     Ok(_) => {
+
                         // Also remove metadata file if it exists
                         if metadata_path.exists() {
                             let _ = fs::remove_file(&metadata_path);
                         }
 
-                        // TODO: Remove from any object indexes when implemented
-                        // For now, filesystem deletion is sufficient
+                        // Update quota for successful deletion
+                        if !object_path.is_dir() {
+                            if let Err(e) = state.quota_manager.update_quota_remove(&bucket, file_size).await {
+                                warn!("Failed to update quota for bucket {} after batch delete: {}", bucket, e);
+                            }
+
+                            // Also increment delete stats
+                            if let Err(e) = state.quota_manager.increment_stat(&bucket, Operation::Delete).await {
+                                warn!("Failed to update DELETE stats for bucket {}: {}", bucket, e);
+                            }
+                        }
 
                         result.deleted.push(DeletedObject {
                             key: delete_obj.key.clone(),
@@ -1444,6 +1518,11 @@ pub async fn list_objects_impl(
 ) -> Response {
     info!("Listing objects in bucket: {} with prefix: {:?}, delimiter: {:?}, continuation_token: {:?}, max_keys: {:?}",
            bucket, prefix, delimiter, continuation_token, max_keys);
+
+    // Increment stats for LIST operation
+    if let Err(e) = state.quota_manager.increment_stat(&bucket, Operation::List).await {
+        warn!("Failed to update LIST stats for bucket {}: {}", bucket, e);
+    }
 
     // First check if bucket exists on filesystem
     let bucket_path = state.storage_path.join(&bucket);
