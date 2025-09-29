@@ -11,6 +11,7 @@ pub struct AppState {
     pub access_keys: Arc<HashMap<String, String>>,
     pub multipart_uploads: Arc<Mutex<HashMap<String, MultipartUpload>>>,
     pub quota_manager: Arc<crate::quota::QuotaManager>,
+    pub wal_writer: Arc<crate::wal::WALWriter>,
 }
 
 #[derive(Clone)]

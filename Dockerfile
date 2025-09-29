@@ -1,4 +1,4 @@
-FROM rust:1.75 as builder
+FROM rust:1.82 as builder
 
 WORKDIR /app
 
@@ -6,15 +6,16 @@ WORKDIR /app
 COPY Cargo.toml ./
 
 # Create dummy main to cache dependencies
-RUN mkdir src && echo "fn main() {}" > src/main.rs
-RUN cargo build --release
+RUN mkdir src && echo "fn main() {}" > src/main.rs && \
+    mkdir -p src/bin && echo "fn main() {}" > src/bin/replicator.rs
+RUN cargo build --release --bin ironbucket
 
 # Copy actual source code
 COPY src ./src
 
 # Force rebuild of the application
 RUN touch src/main.rs
-RUN cargo build --release
+RUN cargo build --release --bin ironbucket
 
 # Runtime stage
 FROM debian:bookworm-slim

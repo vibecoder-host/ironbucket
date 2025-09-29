@@ -26,6 +26,8 @@ s3-node1/*
 s3-node2/*
 s3/*
 redis-data/*
+cluster-wal/*
+wal/*
 
 # Build outputs
 dist/

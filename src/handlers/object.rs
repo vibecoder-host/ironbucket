@@ -612,6 +612,9 @@ pub async fn handle_object_post(
                     .unwrap();
             }
 
+            // Log to WAL for replication
+            state.wal_writer.log_put(&bucket, &key, combined_data.len() as u64, Some(etag.clone()));
+
             // Update quota and stats after successful multipart upload
             if let Err(e) = state.quota_manager.update_quota_add(&bucket, combined_data.len() as u64).await {
                 warn!("Failed to update quota for bucket {} after multipart upload: {}", bucket, e);
@@ -903,6 +906,10 @@ pub async fn put_object(
                         .body(Body::from("Failed to copy object"))
                         .unwrap();
                 }
+
+                // Log to WAL for replication
+                let copy_etag = format!("{:x}", md5::compute(&data));
+                state.wal_writer.log_put(&bucket, &key, data.len() as u64, Some(copy_etag.clone()));
 
                 // Check for metadata directive
                 let metadata_directive = headers
@@ -1260,6 +1267,9 @@ pub async fn put_object(
 
     info!("Object stored at: {:?}", object_path);
 
+    // Log to WAL for replication
+    state.wal_writer.log_put(&bucket, &key, final_data.len() as u64, Some(etag.clone()));
+
     // Update quota and stats after successful write
     if let Err(e) = state.quota_manager.update_quota_add(&bucket, final_data.len() as u64).await {
         warn!("Failed to update quota for bucket {}: {}", bucket, e);
@@ -1458,6 +1468,9 @@ pub async fn delete_object(
 
     // Update quota if we successfully deleted a file
     if disk_deleted && !object_path.is_dir() {
+        // Log to WAL for replication
+        state.wal_writer.log_delete(&bucket, &key);
+
         // Always update quota for successful file deletion
         // Use the size if we have it, otherwise use 0 (object count will still be decremented)
         let size_to_remove = object_size.unwrap_or(0);

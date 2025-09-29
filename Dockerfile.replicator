@@ -1,0 +1,51 @@
+# Build stage
+FROM rust:1.82 AS builder
+
+WORKDIR /app
+
+# Copy Cargo files
+COPY Cargo.toml ./
+
+# Create dummy main files for caching
+RUN mkdir src && \
+    mkdir -p src/bin && \
+    echo "fn main() {}" > src/main.rs && \
+    echo "fn main() {}" > src/bin/replicator.rs
+
+# Build dependencies (cached)
+RUN cargo build --release --bin replicator
+
+# Copy actual source files
+COPY src ./src
+
+# Force rebuild of the replicator
+RUN touch src/bin/replicator.rs
+RUN cargo build --release --bin replicator
+
+# Runtime stage
+FROM debian:bookworm-slim
+
+# Install CA certificates
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy the replicator binary
+COPY --from=builder /app/target/release/replicator /app/replicator
+
+# Create directories for WAL, state, and storage
+RUN mkdir -p /wal /state /s3
+
+# Default environment variables
+ENV NODE_ID=node-1
+ENV CLUSTER_NODES=""
+ENV WAL_PATH=/wal
+ENV STATE_PATH=/state
+ENV STORAGE_PATH=/s3
+ENV BATCH_INTERVAL_MS=5000
+ENV MAX_BATCH_SIZE=1000
+ENV RUST_LOG=replicator=info
+
+ENTRYPOINT ["/app/replicator"]

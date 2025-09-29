@@ -1223,6 +1223,9 @@ pub async fn create_bucket(
         Ok(_) => {
             info!("Successfully created bucket directory: {:?}", bucket_path);
 
+            // Log to WAL for replication
+            state.wal_writer.log_create_bucket(&bucket);
+
             // Create a .bucket_metadata file to store bucket creation time and other metadata
             let metadata_path = bucket_path.join(".bucket_metadata");
             let metadata = serde_json::json!({
@@ -1476,6 +1479,10 @@ pub async fn delete_bucket(
     match fs::remove_dir_all(&bucket_path) {
         Ok(_) => {
             info!("Successfully deleted bucket: {}", bucket);
+
+            // Log to WAL for replication
+            state.wal_writer.log_delete_bucket(&bucket);
+
             Response::builder()
                 .status(StatusCode::NO_CONTENT)
                 .body(Body::empty())

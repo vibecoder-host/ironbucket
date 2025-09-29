@@ -24,6 +24,7 @@ mod policy_check;
 mod filesystem;
 mod handlers;
 mod quota;
+mod wal;
 
 // Re-export commonly used items from modules
 pub use models::*;
@@ -76,11 +77,37 @@ async fn main() {
 
     let quota_manager = Arc::new(quota::QuotaManager::new(storage_path.clone(), enable_quota));
 
+    // Configure WAL (Write-Ahead Log) for replication
+    let enable_wal = env::var("ENABLE_WAL")
+        .unwrap_or_else(|_| "false".to_string()) == "true";
+
+    let wal_path = if enable_wal {
+        let path = env::var("WAL_PATH")
+            .unwrap_or_else(|_| "/wal".to_string());
+        let wal_dir = PathBuf::from(&path);
+        fs::create_dir_all(&wal_dir).unwrap();
+        wal_dir.join("wal.log")
+    } else {
+        PathBuf::from("/dev/null")
+    };
+
+    let node_id = env::var("NODE_ID")
+        .unwrap_or_else(|_| "node-1".to_string());
+
+    if enable_wal {
+        info!("WAL enabled at {:?} with node_id: {}", wal_path, node_id);
+    } else {
+        info!("WAL disabled");
+    }
+
+    let wal_writer = Arc::new(wal::WALWriter::new(wal_path, node_id, enable_wal));
+
     let state = AppState {
         storage_path: storage_path.clone(),
         access_keys: Arc::new(access_keys),
         multipart_uploads: Arc::new(Mutex::new(HashMap::new())),
         quota_manager: quota_manager.clone(),
+        wal_writer,
     };
 
     let app = Router::new()

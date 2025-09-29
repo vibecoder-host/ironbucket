@@ -1,0 +1,108 @@
+services:
+  # Node 1
+  ironbucket-node1:
+    build: .
+    image: ironbucket:latest
+    ports:
+      - "172.17.0.1:20001:9000"
+    volumes:
+      - ./cluster-wal/node1/s3:/s3
+      - ./cluster-wal/node1/wal:/wal
+    env_file:
+      - .env
+    environment:
+      - RUST_LOG=ironbucket=info,tower_http=info
+      - STORAGE_PATH=/s3
+      - ACCESS_KEY=${ACCESS_KEY:-root}
+      - SECRET_KEY=${SECRET_KEY:-xxxxxxxxxxxxxxx}
+      - AUTO_REMOVE_EMPTY_FOLDERS=1
+      - AUTO_REMOVE_EMPTY_FOLDERS_EVERY_X_MIN=5
+      - ENABLE_ENCRYPTION=${ENABLE_ENCRYPTION:-true}
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY:-}
+      - ENABLE_QUOTA_AND_STATS=${ENABLE_QUOTA_AND_STATS:-0}
+      - ENABLE_WAL=true
+      - WAL_PATH=/wal
+      - NODE_ID=node-1
+    restart: always
+
+  replicator-node1:
+    build:
+      context: .
+      dockerfile: Dockerfile.replicator
+    image: ironbucket-replicator:latest
+    volumes:
+      - ./cluster-wal/node1/s3:/s3
+      - ./cluster-wal/node1/wal:/wal:ro
+      - ./cluster-wal/node1/state:/state
+      - ./cluster-wal:/cluster-wal
+    environment:
+      - NODE_ID=node-1
+      - CLUSTER_NODES=ironbucket-node2:9000
+      - WAL_PATH=/wal
+      - STATE_PATH=/state
+      - STORAGE_PATH=/s3
+      - BATCH_INTERVAL_MS=5000
+      - RUST_LOG=replicator=info
+    depends_on:
+      - ironbucket-node1
+    restart: always
+
+  # Node 2
+  ironbucket-node2:
+    build: .
+    image: ironbucket:latest
+    ports:
+      - "172.17.0.1:20002:9000"
+    volumes:
+      - ./cluster-wal/node2/s3:/s3
+      - ./cluster-wal/node2/wal:/wal
+    env_file:
+      - .env
+    environment:
+      - RUST_LOG=ironbucket=info,tower_http=info
+      - STORAGE_PATH=/s3
+      - ACCESS_KEY=${ACCESS_KEY:-root}
+      - SECRET_KEY=${SECRET_KEY:-xxxxxxxxxxxxxxx}
+      - AUTO_REMOVE_EMPTY_FOLDERS=1
+      - AUTO_REMOVE_EMPTY_FOLDERS_EVERY_X_MIN=5
+      - ENABLE_ENCRYPTION=${ENABLE_ENCRYPTION:-true}
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY:-}
+      - ENABLE_QUOTA_AND_STATS=${ENABLE_QUOTA_AND_STATS:-0}
+      - ENABLE_WAL=true
+      - WAL_PATH=/wal
+      - NODE_ID=node-2
+    restart: always
+
+  replicator-node2:
+    build:
+      context: .
+      dockerfile: Dockerfile.replicator
+    image: ironbucket-replicator:latest
+    volumes:
+      - ./cluster-wal/node2/s3:/s3
+      - ./cluster-wal/node2/wal:/wal:ro
+      - ./cluster-wal/node2/state:/state
+      - ./cluster-wal:/cluster-wal
+    environment:
+      - NODE_ID=node-2
+      - CLUSTER_NODES=ironbucket-node1:9000
+      - WAL_PATH=/wal
+      - STATE_PATH=/state
+      - STORAGE_PATH=/s3
+      - BATCH_INTERVAL_MS=5000
+      - RUST_LOG=replicator=info
+    depends_on:
+      - ironbucket-node2
+    restart: always
+
+  # Load balancer
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "172.17.0.1:20000:80"
+    volumes:
+      - ./nginx-cluster.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - ironbucket-node1
+      - ironbucket-node2
+    restart: always
