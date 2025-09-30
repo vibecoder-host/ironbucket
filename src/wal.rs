@@ -156,9 +156,8 @@ impl WALWriter {
 
                     // Write sequence state for faster startup
                     let state_path = wal_path.with_extension("sequence");
-                    if let Some(last_seq) = thread_counter.load(Ordering::Relaxed).checked_sub(1) {
-                        let _ = fs::write(&state_path, format!("{}", last_seq + 1));
-                    }
+                    let next_seq = thread_counter.load(Ordering::Relaxed);
+                    let _ = fs::write(&state_path, format!("{}", next_seq));
 
                     // Always flush after writing a batch to ensure data is persisted
                     // Use the saved batch_size since batch is now empty after drain

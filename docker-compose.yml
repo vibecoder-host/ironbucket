@@ -6,6 +6,7 @@ services:
       - "172.17.0.1:20000:9000"
     volumes:
       - ./s3:/s3
+      - ./wal:/wal
     env_file:
       - .env
     environment:
@@ -18,4 +19,29 @@ services:
       - ENABLE_ENCRYPTION=${ENABLE_ENCRYPTION:-true}
       - ENCRYPTION_KEY=${ENCRYPTION_KEY:-}
       - ENABLE_QUOTA_AND_STATS=${ENABLE_QUOTA_AND_STATS:-0}
+      - ENABLE_WAL=true
+      - WAL_PATH=/wal
+      - NODE_ID=node-1
     restart: always
+   
+  #replicator-node1:
+  #  build:
+  #    context: .
+  #    dockerfile: Dockerfile.replicator
+  #  image: ironbucket-replicator:latest
+  #  volumes:
+  #    - ./data/node1/s3:/s3
+  #    - ./data/node1/wal:/wal:ro
+  #    - ./data/node1/state:/state
+  #    - ./cluster-wal:/cluster-wal
+  #  environment:
+  #    - NODE_ID=node-1
+  #    - CLUSTER_NODES=ironbucket-node2:9000
+  #    - WAL_PATH=/wal
+  #    - STATE_PATH=/state
+  #    - STORAGE_PATH=/s3
+  #    - BATCH_INTERVAL_MS=5000
+  #    - RUST_LOG=replicator=info
+  #  depends_on:
+  #    - ironbucket-node1
+  #  restart: always
