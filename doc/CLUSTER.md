@@ -33,19 +33,19 @@ docker compose -f docker-compose.wal.yml up -d --build
 
 **Use Case**: Development, testing WAL functionality, preparing for cluster deployment
 
-### 2. Two-Node WAL Cluster (docker-compose.cluster-wal.yml)
+### 2. Two-Node WAL Cluster (docker-compose.cluster.yml)
 
 Full cluster setup with two nodes, replication, and load balancing.
 
 ```bash
-docker compose -f docker-compose.cluster-wal.yml up -d --build
+docker compose -f docker-compose.cluster.yml up -d --build
 ```
 
 **Use Case**: Production deployment, high availability, data redundancy
 
 ### 3. Multi-Node WAL Cluster (Extended Configuration)
 
-For clusters with 3 or more nodes, extend the docker-compose.cluster-wal.yml:
+For clusters with 3 or more nodes, extend the docker-compose.cluster.yml:
 
 ```yaml
 # Example for node3 in a 3-node cluster
@@ -128,7 +128,7 @@ upstream ironbucket {
 
 ```bash
 # Start the WAL cluster
-docker compose -f docker-compose.cluster-wal.yml up -d --build
+docker compose -f docker-compose.cluster.yml up -d --build
 
 # Verify all containers are running
 docker ps | grep ironbucket
@@ -142,10 +142,10 @@ docker logs ironbucket-replicator-node1-1
 
 ```bash
 # Graceful shutdown
-docker compose -f docker-compose.cluster-wal.yml down
+docker compose -f docker-compose.cluster.yml down
 
 # Force stop (not recommended)
-docker compose -f docker-compose.cluster-wal.yml kill
+docker compose -f docker-compose.cluster.yml kill
 ```
 
 ### Monitoring Replication
