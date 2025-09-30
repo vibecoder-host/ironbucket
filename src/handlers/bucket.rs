@@ -510,6 +510,9 @@ pub async fn handle_bucket_put(
                     .body(Body::from("InternalError"))
                     .unwrap();
             }
+
+            // Log to WAL for replication
+            state.wal_writer.log_update_metadata(&bucket, "versioning", status);
         }
         info!("Set versioning status for bucket {} to {:?}", bucket, status);
 
@@ -553,6 +556,9 @@ pub async fn handle_bucket_put(
                 .body(Body::from("InternalError"))
                 .unwrap();
         }
+
+        // Log to WAL for replication
+        state.wal_writer.log_update_metadata(&bucket, "policy", &policy_str);
         info!("Set policy for bucket {}", bucket);
 
         return Response::builder()
@@ -620,6 +626,10 @@ pub async fn handle_bucket_put(
                 .body(Body::from("InternalError"))
                 .unwrap();
         }
+
+        // Log to WAL for replication
+        let encryption_json = serde_json::to_string(&encryption).unwrap_or_default();
+        state.wal_writer.log_update_metadata(&bucket, "encryption", &encryption_json);
         info!("Set encryption for bucket {}: {}", bucket, algorithm);
 
         return Response::builder()
@@ -1289,6 +1299,9 @@ pub async fn delete_bucket(
                     .unwrap();
             }
 
+            // Log to WAL for replication
+            state.wal_writer.log_delete_metadata(&bucket, "policy");
+
             info!("Deleted policy for bucket {}", bucket);
             return Response::builder()
                 .status(StatusCode::NO_CONTENT)
@@ -1328,6 +1341,9 @@ pub async fn delete_bucket(
                     .body(Body::from("InternalError"))
                     .unwrap();
             }
+
+            // Log to WAL for replication
+            state.wal_writer.log_delete_metadata(&bucket, "encryption");
 
             info!("Deleted encryption configuration for bucket {}", bucket);
             return Response::builder()

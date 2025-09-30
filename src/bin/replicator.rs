@@ -159,7 +159,8 @@ impl Replicator {
     fn parse_wal_line(line: &str) -> Option<WALEntry> {
         let parts: Vec<&str> = line.split('\t').collect();
 
-        if parts.len() < 6 {
+        // Most operations need at least 5 fields (op, node, seq, timestamp, bucket)
+        if parts.len() < 5 {
             return None;
         }
 
@@ -168,20 +169,53 @@ impl Replicator {
         let sequence_id = parts[2].parse().ok()?;
         let timestamp = parts[3].parse().ok()?;
         let bucket = parts[4].to_string();
-        let key = parts[5].to_string();
 
-        let (size, etag) = match operation {
+        // Handle different operations with different field counts
+        let (key, size, etag) = match operation {
             "PUT" => {
-                if parts.len() >= 8 {
-                    (
-                        parts[6].parse().ok(),
-                        Some(parts[7].to_string()).filter(|s| !s.is_empty()),
-                    )
-                } else {
-                    (None, None)
+                if parts.len() < 6 {
+                    return None;
                 }
+                let key = parts[5].to_string();
+                let size = if parts.len() > 6 { parts[6].parse().ok() } else { None };
+                let etag = if parts.len() > 7 {
+                    Some(parts[7].to_string()).filter(|s| !s.is_empty())
+                } else {
+                    None
+                };
+                (key, size, etag)
             }
-            _ => (None, None),
+            "DELETE" => {
+                if parts.len() < 6 {
+                    return None;
+                }
+                (parts[5].to_string(), None, None)
+            }
+            "CREATE_BUCKET" | "DELETE_BUCKET" => {
+                // These operations don't have a key
+                (String::new(), None, None)
+            }
+            "UPDATE_METADATA" => {
+                if parts.len() < 7 {
+                    return None;
+                }
+                // metadata_type is stored in key, content in etag
+                let metadata_type = parts[5].to_string();
+                let content = if parts.len() > 6 {
+                    Some(parts[6].to_string())
+                } else {
+                    None
+                };
+                (metadata_type, None, content)
+            }
+            "DELETE_METADATA" => {
+                if parts.len() < 6 {
+                    return None;
+                }
+                // metadata_type is stored in key
+                (parts[5].to_string(), None, None)
+            }
+            _ => (String::new(), None, None),
         };
 
         Some(WALEntry {
@@ -388,6 +422,34 @@ impl Replicator {
                     if target_path.exists() {
                         fs::remove_dir_all(&target_path)?;
                         info!("Deleted bucket {} on {}", entry.bucket, target_node);
+                    }
+                }
+                "UPDATE_METADATA" => {
+                    // metadata_type is in entry.key, content is in entry.etag
+                    let metadata_type = &entry.key;
+                    let content = entry.etag.as_ref().unwrap_or(&String::new()).clone();
+
+                    // Unescape the content
+                    let unescaped_content = content.replace("\\n", "\n").replace("\\t", "\t");
+
+                    let target_bucket = target_storage.join(&entry.bucket);
+                    if target_bucket.exists() {
+                        let metadata_file = target_bucket.join(format!(".{}", metadata_type));
+                        fs::write(&metadata_file, &unescaped_content)?;
+                        info!("Updated {} metadata for bucket {} on {}", metadata_type, entry.bucket, target_node);
+                    }
+                }
+                "DELETE_METADATA" => {
+                    // metadata_type is in entry.key
+                    let metadata_type = &entry.key;
+
+                    let target_bucket = target_storage.join(&entry.bucket);
+                    if target_bucket.exists() {
+                        let metadata_file = target_bucket.join(format!(".{}", metadata_type));
+                        if metadata_file.exists() {
+                            fs::remove_file(&metadata_file)?;
+                            info!("Deleted {} metadata for bucket {} on {}", metadata_type, entry.bucket, target_node);
+                        }
                     }
                 }
                 _ => {

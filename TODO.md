@@ -125,15 +125,6 @@ The x-amz-delete-marker: true response header tells you that the object accessed
 
 ---
 
-## Clustering & Replication
-
-### Cluster Operations
-- ⬜ **Notify peer nodes on object creation** (`src/cluster.rs:21`)
-- ⬜ **Notify peer nodes on object deletion** (`src/cluster.rs:26`)
-- ⬜ **Replicate to peer nodes** (`src/cluster.rs:31`)
-- ⬜ **Notify peer nodes on bucket operations** (`src/cluster.rs:36`)
-- ⬜ **Check cluster health** (`src/cluster.rs:41`)
-
 ### Erasure Coding
 - ⬜ **Implement Reed-Solomon erasure coding** (See detailed plan in [`EC.md`](EC.md))
   - ⬜ Core erasure coding library with Reed-Solomon

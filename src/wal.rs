@@ -26,6 +26,15 @@ pub enum WALOp {
     DeleteBucket {
         bucket: String,
     },
+    UpdateMetadata {
+        bucket: String,
+        metadata_type: String,  // "versioning", "encryption", "policy", "cors", "lifecycle"
+        content: String,        // The actual content/configuration
+    },
+    DeleteMetadata {
+        bucket: String,
+        metadata_type: String,  // "versioning", "encryption", "policy", "cors", "lifecycle"
+    },
 }
 
 pub struct WALWriter {
@@ -106,6 +115,7 @@ impl WALWriter {
                         .unwrap()
                         .as_millis() as u64;
 
+                    let batch_size = batch.len();  // Save size before draining
                     for op in batch.drain(..) {
                         let sequence = thread_counter.fetch_add(1, Ordering::Relaxed);
 
@@ -127,6 +137,16 @@ impl WALWriter {
                                 format!("DELETE_BUCKET\t{}\t{}\t{}\t{}\n",
                                     writer_node_id, sequence, timestamp, bucket)
                             }
+                            WALOp::UpdateMetadata { bucket, metadata_type, content } => {
+                                // Escape content to handle newlines and tabs
+                                let escaped_content = content.replace('\n', "\\n").replace('\t', "\\t");
+                                format!("UPDATE_METADATA\t{}\t{}\t{}\t{}\t{}\t{}\n",
+                                    writer_node_id, sequence, timestamp, bucket, metadata_type, escaped_content)
+                            }
+                            WALOp::DeleteMetadata { bucket, metadata_type } => {
+                                format!("DELETE_METADATA\t{}\t{}\t{}\t{}\t{}\n",
+                                    writer_node_id, sequence, timestamp, bucket, metadata_type)
+                            }
                         };
 
                         if let Err(e) = file.write_all(line.as_bytes()) {
@@ -140,13 +160,13 @@ impl WALWriter {
                         let _ = fs::write(&state_path, format!("{}", last_seq + 1));
                     }
 
-                    // Don't force flush every batch - let OS handle it for better performance
-                    // Only flush on important operations or periodically
-                    if batch.len() >= 100 || last_flush.elapsed() >= Duration::from_secs(30) {
+                    // Always flush after writing a batch to ensure data is persisted
+                    // Use the saved batch_size since batch is now empty after drain
+                    if batch_size > 0 {
                         if let Err(e) = file.flush() {
                             error!("Failed to flush WAL: {}", e);
                         }
-                        debug!("WAL batch force flushed");
+                        debug!("WAL batch force flushed ({} entries)", batch_size);
                     }
 
                     last_flush = Instant::now();
@@ -207,6 +227,31 @@ impl WALWriter {
 
         let _ = self.sender.try_send(WALOp::DeleteBucket {
             bucket: bucket.to_string(),
+        });
+    }
+
+    #[inline(always)]
+    pub fn log_update_metadata(&self, bucket: &str, metadata_type: &str, content: &str) {
+        if !self.enabled {
+            return;
+        }
+
+        let _ = self.sender.try_send(WALOp::UpdateMetadata {
+            bucket: bucket.to_string(),
+            metadata_type: metadata_type.to_string(),
+            content: content.to_string(),
+        });
+    }
+
+    #[inline(always)]
+    pub fn log_delete_metadata(&self, bucket: &str, metadata_type: &str) {
+        if !self.enabled {
+            return;
+        }
+
+        let _ = self.sender.try_send(WALOp::DeleteMetadata {
+            bucket: bucket.to_string(),
+            metadata_type: metadata_type.to_string(),
         });
     }
 
